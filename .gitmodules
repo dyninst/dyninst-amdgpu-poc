@@ -1,0 +1,4 @@
+[submodule "dyninst"]
+	path = dyninst
+	url = git@github.com:dyninst/dyninst.git
+	branch = bbiiggppiigg/amdgpu-hostcall-multiwave-scratch

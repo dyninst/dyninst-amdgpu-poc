@@ -1,0 +1,32 @@
+# ---- build products (device/host/tooling) ----
+*.o
+*.so
+*.hsaco
+*.elf
+*.co
+*.bundle
+*.s
+*_tu.cpp
+*.kd
+# clang-offload-bundler extraction leftovers
+*.0.hipv4*
+*.0.host-*
+# host binaries
+runtime/host/preload.so
+runtime/host/launcher
+# mutator + example cmake build trees
+instrumentation/mutators/build/
+# mutatee executables (no extension)
+mutatees/vectoradd/vectoradd
+mutatees/vectoradd/vectoradd_small
+mutatees/vectoradd/vectoradd_mw
+mutatees/vectoradd/twokernels
+mutatees/vectoradd/twoco
+# experiment run outputs (traces, wave files, manifests)
+experiments/runs/
+# python / misc
+__pycache__/
+*.pyc
+# dyninst mutator side-outputs (written to CWD)
+*.instrumentationVarTable
+*.instrumentedKernelNames
