@@ -4,7 +4,7 @@
 # environment if your install differs.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROCM="${ROCM:-/opt/rocm-7.0.2}"
-DYNINST_PREFIX="${DYNINST_PREFIX:-/home/wuxx1279/bin/dynamd}"
+DYNINST_PREFIX="${DYNINST_PREFIX:-$HOME/bin/dynamd}"
 
 OBJDUMP="$ROCM/lib/llvm/bin/llvm-objdump"
 BUNDLER="$ROCM/lib/llvm/bin/clang-offload-bundler"

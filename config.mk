@@ -5,7 +5,7 @@
 # two in sync. Everything is ?= so it can be overridden from the env or the make cmdline.
 
 ROCM           ?= /opt/rocm-7.0.2
-DYNINST_PREFIX ?= /home/wuxx1279/bin/dynamd
+DYNINST_PREFIX ?= $(HOME)/bin/dynamd
 
 # ---- toolchain ----
 HIPCC    ?= $(ROCM)/bin/hipcc
