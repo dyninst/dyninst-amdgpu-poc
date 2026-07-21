@@ -1,10 +1,8 @@
 # Test HIP applications (mutatees). Built with the SAME feature set as the runtime/
 # user lib (gfx908:sramecc+:xnack- + COV6 => ABI ver 4, flags 0xE30) so cross-object
 # linking works. Code objects are extracted by scripts/build_inst_pipeline.sh.
-HIPCC    = /opt/rocm-7.0.2/bin/hipcc
-ARCH     = gfx908:sramecc+:xnack-
-COV      = 6
-HIPFLAGS = --offload-arch=$(ARCH) -mcode-object-version=$(COV)
+include ../../config.mk                    # toolchain paths + target contract
+HIPFLAGS = $(HIP_BASEFLAGS)
 
 EXES = vectoradd vectoradd_small vectoradd_mw twokernels twoco
 

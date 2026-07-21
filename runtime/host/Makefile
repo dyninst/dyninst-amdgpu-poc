@@ -1,7 +1,6 @@
 # Host half of the hostcall runtime: the LD_PRELOAD product (preload.so) and the
 # standalone diagnostic harness (launcher). Both share hostcall_service.cpp.
-ROCM     ?= /opt/rocm-7.0.2
-CXX       = g++
+include ../../config.mk                    # toolchain paths + target contract
 CXXFLAGS  = -O2 -g -std=c++17 -I$(ROCM)/include
 LDFLAGS   = -L$(ROCM)/lib -lhsa-runtime64 -lpthread
 

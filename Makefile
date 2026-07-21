@@ -5,8 +5,9 @@
 #   make mutators    # build the Dyninst mutators (needs DYNINST_PREFIX installed)
 #   make clean
 #
-# Override the Dyninst install prefix if it differs:
-DYNINST_PREFIX ?= /home/wuxx1279/bin/dynamd
+# Toolchain paths + target contract (also included by every sub-Makefile).
+# Override DYNINST_PREFIX / ROCM here or on the command line.
+include config.mk
 
 .PHONY: build runtime userlib host mutatees mutators clean
 

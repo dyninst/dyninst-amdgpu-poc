@@ -1,13 +1,7 @@
 # Example user instrumentation compiled TOGETHER with the hostcall runtime into ONE
 # code object (combined.aliased.elf) — the artifact dyninst links a mutatee against.
-HIPCC    = /opt/rocm-7.0.2/bin/hipcc
-BUNDLER  = /opt/rocm-7.0.2/lib/llvm/bin/clang-offload-bundler
-OBJ2YAML = /usr/bin/obj2yaml
-YAML2OBJ = /usr/bin/yaml2obj
-ARCH     = gfx908:sramecc+:xnack-
-COV      = 6
-HIPFLAGS = --offload-arch=$(ARCH) -mcode-object-version=$(COV) \
-           -Xoffload-linker --unresolved-symbols=ignore-all
+include ../../config.mk                    # toolchain paths + target contract
+HIPFLAGS = $(HIP_BASEFLAGS) $(HIP_LINKIGNORE)
 # hostcall runtime (hostcalls.h + device/hostcall_lib.cpp)
 RT       = ../../runtime
 SRCS     = user_probe.cpp $(RT)/device/hostcall_lib.cpp

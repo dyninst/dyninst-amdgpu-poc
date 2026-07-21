@@ -1,13 +1,7 @@
 # Device half of the hostcall runtime -> hostcall_lib.aliased.elf
 # (raw code object + .dyninst.* OBJECT aliases + per-function register-usage symbols).
-HIPCC    = /opt/rocm-7.0.2/bin/hipcc
-BUNDLER  = /opt/rocm-7.0.2/lib/llvm/bin/clang-offload-bundler
-OBJ2YAML = /usr/bin/obj2yaml
-YAML2OBJ = /usr/bin/yaml2obj
-ARCH     = gfx908:sramecc+:xnack-        # full target-id + COV6 => ABI ver 4, flags 0xE30
-COV      = 6
-HIPFLAGS = --offload-arch=$(ARCH) -mcode-object-version=$(COV) -I.. \
-           -Xoffload-linker --unresolved-symbols=ignore-all
+include ../../config.mk                    # toolchain paths + target contract
+HIPFLAGS = $(HIP_BASEFLAGS) -I.. $(HIP_LINKIGNORE)
 ALIASES  = ../../tools/add_object_aliases.py
 
 all: hostcall_lib.aliased.elf
