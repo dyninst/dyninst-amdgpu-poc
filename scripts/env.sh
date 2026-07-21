@@ -2,9 +2,9 @@
 # Shell counterpart of the repo-root config.mk (which the Makefiles include) — keep the
 # toolchain paths + target here in sync with it. Override ROCM / DYNINST_PREFIX in the
 # environment if your install differs.
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # absolute repo root
 ROCM="${ROCM:-/opt/rocm-7.0.2}"
-DYNINST_PREFIX="${DYNINST_PREFIX:-$HOME/bin/dynamd}"
+DYNINST_PREFIX="${DYNINST_PREFIX:-$ROOT/build/dyninst}"   # repo-relative default (absolute)
 
 OBJDUMP="$ROCM/lib/llvm/bin/llvm-objdump"
 BUNDLER="$ROCM/lib/llvm/bin/clang-offload-bundler"

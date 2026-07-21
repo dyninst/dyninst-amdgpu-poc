@@ -4,8 +4,17 @@
 # The shell counterpart used by scripts/ and experiments/ is scripts/env.sh — keep the
 # two in sync. Everything is ?= so it can be overridden from the env or the make cmdline.
 
+# Absolute path to this file's directory (the repo root). Robust regardless of which
+# sub-Makefile includes us: each references config.mk by its own relative path, and
+# $(abspath ...) resolves that against the includer's CWD. Evaluated immediately (:=)
+# while config.mk is the last entry in MAKEFILE_LIST.
+REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
 ROCM           ?= /opt/rocm-7.0.2
-DYNINST_PREFIX ?= $(HOME)/bin/dynamd
+# Patched Dyninst install prefix — repo-relative by default (built from the dyninst/
+# submodule into <repo>/build/dyninst), resolved to an absolute path so it works in
+# LD_LIBRARY_PATH / DYNINSTAPI_RT_LIB. Override to reuse an existing install.
+DYNINST_PREFIX ?= $(REPO_ROOT)/build/dyninst
 
 # ---- toolchain ----
 HIPCC    ?= $(ROCM)/bin/hipcc

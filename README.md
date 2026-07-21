@@ -33,12 +33,13 @@ archive/            # earlier experiments, preserved for reference
 ```sh
 git submodule update --init dyninst          # fetch the patched Dyninst source
 
-# 1. Build + install the patched Dyninst (large; one-time). Prefix defaults below.
-cd dyninst && cmake -B build -DCMAKE_INSTALL_PREFIX=$HOME/bin/dynamd && \
-  cmake --build build -j && cmake --install build && cd ..
+# 1. Build + install the patched Dyninst (large; one-time). Installs into the repo-relative
+#    default prefix build/dyninst (DYNINST_PREFIX); override to reuse an existing install.
+cmake -S dyninst -B build/dyninst-cmake -DCMAKE_INSTALL_PREFIX="$PWD/build/dyninst"
+cmake --build build/dyninst-cmake -j && cmake --install build/dyninst-cmake
 
 # 2. Build the mutators against it, then the PoC components.
-make mutators DYNINST_PREFIX=$HOME/bin/dynamd
+make mutators                                # DYNINST_PREFIX defaults to <repo>/build/dyninst
 make build                                   # runtime + user lib + host + mutatees
 
 # 3. Run an experiment (each is self-contained: instrument -> preload -> verify).

@@ -16,6 +16,8 @@ runtime/host/preload.so
 runtime/host/launcher
 # mutator + example cmake build trees
 instrumentation/mutators/build/
+# top-level build tree: dyninst cmake build + install prefix (DYNINST_PREFIX default)
+/build/
 # mutatee executables (no extension)
 mutatees/vectoradd/vectoradd
 mutatees/vectoradd/vectoradd_small
