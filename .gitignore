@@ -32,3 +32,6 @@ __pycache__/
 # dyninst mutator side-outputs (written to CWD)
 *.instrumentationVarTable
 *.instrumentedKernelNames
+# internal design docs — LOCAL ONLY, kept out of the public github repo.
+# (README.md at repo root stays public; everything under docs/ is private.)
+/docs/
