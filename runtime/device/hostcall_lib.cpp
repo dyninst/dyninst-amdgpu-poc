@@ -237,9 +237,9 @@ void hc_write_nl(int id) {
 // Reads blockIdx.x (workgroup-id x) — an IMPLICIT ABI argument the compiler passes
 // to a device function in a fixed SGPR (empirically s12 on gfx908). A dyninst-
 // inserted s_swappc sets up NONE of the ABI context, so without implicit-arg
-// forwarding this SGPR holds an arbitrary kernel value -> wrong (or 0). With
-// DYNINST_IMPLICIT_ARGS the trampoline forwards the kernel's workgroup-id into the
-// callee's blockIdx register before the call, so this logs the correct per-block
+// forwarding this SGPR holds an arbitrary kernel value -> wrong (or 0). The Dyninst
+// trampoline now forwards the kernel's workgroup-id into the callee's blockIdx register
+// before the call (on by default, no env gate), so this logs the correct per-block
 // index. Validated with multiple workgroups (HOSTCALL_WG): block b logs b.
 extern "C" __device__ __noinline__ __attribute__((used))
 void hc_write_bid(int /*site (unused): we log blockIdx.x instead)*/) {

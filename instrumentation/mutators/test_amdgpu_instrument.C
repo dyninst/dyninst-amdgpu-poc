@@ -140,8 +140,8 @@ int main(int argc, char* argv[]) {
   }
   // Implicit-arg (blockIdx) test (HC_BLOCKIDX): insert hc_write_bid, which reads
   // blockIdx.x (an implicit ABI arg in s12) — exercises Phase 3a implicit-arg
-  // forwarding. Run the mutator with DYNINST_IMPLICIT_ARGS and the launcher with
-  // multiple workgroups (HOSTCALL_WG) so blockIdx varies.
+  // forwarding, which is on by default in Dyninst now (no env gate). Run the launcher
+  // with multiple workgroups (HOSTCALL_WG) so blockIdx varies.
   BPatch_function* fnWriteBid = getenv("HC_BLOCKIDX") ? findFuncByName(appImage, "hc_write_bid") : nullptr;
   if(getenv("HC_BLOCKIDX") && !fnWriteBid) {
     cerr << "HC_BLOCKIDX set but hc_write_bid not found" << endl;
