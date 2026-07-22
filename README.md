@@ -35,7 +35,12 @@ git submodule update --init dyninst          # fetch the patched Dyninst source
 
 # 1. Build + install the patched Dyninst (large; one-time). Installs into the repo-relative
 #    default prefix build/dyninst (DYNINST_PREFIX); override to reuse an existing install.
-cmake -S dyninst -B build/dyninst-cmake -DCMAKE_INSTALL_PREFIX="$PWD/build/dyninst"
+#    DYNINST_CODEGEN_ARCH=amdgpu_gfx908 is REQUIRED — without it Dyninst builds for the host
+#    arch only (no gfx908 emitter) and the mutators can't instrument AMDGPU code objects.
+#    (Machine-specific compiler / Boost / TBB flags for this host are in HANDOFF.md.)
+cmake -S dyninst -B build/dyninst-cmake \
+  -DCMAKE_INSTALL_PREFIX="$PWD/build/dyninst" \
+  -DDYNINST_CODEGEN_ARCH=amdgpu_gfx908
 cmake --build build/dyninst-cmake -j && cmake --install build/dyninst-cmake
 
 # 2. Build the mutators against it, then the PoC components.
