@@ -18,6 +18,7 @@ set(MUTATORS
   preload_perwave_instrument  # per-wave multi-file (nullary pwg_open/pwg_flush)
   multikernel_instrument      # instrument several kernels in one code object
   capture_return_instrument   # capture a call's ABI return into a per-wave variable
+  bb_count_instrument         # basic-block execution counter (getpc-free kernels)
 )
 foreach(m ${MUTATORS})
   add_executable(${m} ${m}.C)

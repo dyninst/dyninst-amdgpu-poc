@@ -24,6 +24,7 @@ mutatees/vectoradd/vectoradd_small
 mutatees/vectoradd/vectoradd_mw
 mutatees/vectoradd/twokernels
 mutatees/vectoradd/twoco
+mutatees/vectoradd/bbdemo
 # experiment run outputs (traces, wave files, manifests)
 experiments/runs/
 # python / misc

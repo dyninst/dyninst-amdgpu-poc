@@ -188,3 +188,47 @@ void pwg_flush() {
     i = put_str(b, i, "wave "); i = put_uint(b, i, wid); i = put_str(b, i, " reporting in\n");
     gpu_fwrite(h, b + 16, i - 16);                     // -> this wave's own file
 }
+
+// ---- BASIC-BLOCK COUNTER (global-base per-wave model) --------------------------
+// Per-wave, per-basic-block execution counter. The mutator inserts `bb_hit(bbid)` at
+// EACH basic-block entry (bbid = the block's stable index) and `bb_flush(nbb)` at
+// kernel EXIT. Each wave owns its slice of g_pw_base; one elected lane increments, so
+// the count is per-wave BLOCK EXECUTIONS (how many times the wave ran that block) with
+// NO atomics. Slice layout (STRIDE=4096): counts[] as u32 at BBC_COUNTS_OFF; a text
+// scratch area at BBC_TEXT_OFF for the flush (kept clear of counts).
+#define BBC_COUNTS_OFF 64u     // u32 counts[nbb] here -> supports nbb up to (2048-64)/4
+#define BBC_TEXT_OFF   2048u   // filename + report text built here for the flush
+
+extern "C" __device__ __noinline__ __attribute__((used))
+void bb_hit(int bbid) {
+    unsigned long long ex = __builtin_amdgcn_read_exec();
+    unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
+    unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
+    if (pos != 0) return;                              // one lane/wave: count wave-block-execs
+    char* b = pwg_slice();
+    *(volatile unsigned*)(b + BBC_COUNTS_OFF + (unsigned)bbid * 4u) += 1u;
+}
+
+extern "C" __device__ __noinline__ __attribute__((used))
+void bb_flush(int nbb) {
+    unsigned long long ex = __builtin_amdgcn_read_exec();
+    unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
+    unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
+    if (pos != 0) return;
+    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    char* b = pwg_slice();
+    volatile unsigned* counts = (volatile unsigned*)(b + BBC_COUNTS_OFF);
+    char* t = b + BBC_TEXT_OFF;                        // global text area (flat-loadable)
+    // filename bbcount_<wid>.txt, built at the end of the text area
+    char* nm = t + 1024; int fi = 0;
+    fi = put_str(nm, fi, "bbcount_"); fi = put_uint(nm, fi, wid); fi = put_str(nm, fi, ".txt"); nm[fi] = '\0';
+    long long h = gpu_fopen(nm, "w");
+    // one report line per block: "bb <k>: <count>\n"
+    int i = 0;
+    for (int k = 0; k < nbb; k++) {
+        i = put_str(t, i, "bb ");  i = put_uint(t, i, (unsigned)k);
+        i = put_str(t, i, ": ");   i = put_uint(t, i, counts[k]);
+        t[i++] = '\n';
+    }
+    gpu_fwrite(h, t, i);                               // -> bbcount_<wid>.txt
+}

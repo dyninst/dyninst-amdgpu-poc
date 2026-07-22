@@ -4,12 +4,12 @@
 include ../../config.mk                    # toolchain paths + target contract
 HIPFLAGS = $(HIP_BASEFLAGS)
 
-EXES = vectoradd vectoradd_small vectoradd_mw twokernels twoco
+EXES = vectoradd vectoradd_small vectoradd_mw twokernels twoco bbdemo
 
 all: $(EXES)
 
-# single-kernel vectoradd (N=1<<20) + small/multi-wave variants
-vectoradd vectoradd_small vectoradd_mw twokernels: %: %.cpp
+# single-kernel vectoradd (N=1<<20) + small/multi-wave variants; bbdemo = BB-counter demo
+vectoradd vectoradd_small vectoradd_mw twokernels bbdemo: %: %.cpp
 	$(HIPCC) $(HIPFLAGS) $< -o $@
 
 # multi-code-object: kernel kB in a HIP shared library, kernel kA in the exe
