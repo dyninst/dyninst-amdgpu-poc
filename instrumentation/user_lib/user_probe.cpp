@@ -229,3 +229,31 @@ void bv_write(void* slice, int nbytes) {
     char* rec = b + 128;
     gpu_fwrite_256(h, rec, pwr_fill(rec, wid, nbytes));    // by-value copy into the ring (≤512)
 }
+
+// ---- MULTI-VAR test: two independent per-wave variables ------------------------
+// Dyninst passes THIS wave's slice for EACH of two per-wave variables at distinct arena
+// offsets — a = base + wid*STRIDE + off_a, b = base + wid*STRIDE + off_b. We write a
+// distinct marker into each; the host then confirms they landed at different addresses,
+// proving emitCall's per-arg offset add (the multi-var lowering). One elected lane/wave.
+// ---- BB COUNTER, one-var-per-block style ---------------------------------------
+// The multi-var alternative to bb_inc(base, bbid): the mutator declares one per-wave
+// variable PER basic block and passes THIS block's counter pointer directly, so the
+// probe needs no bbid and no indexing — it just bumps the cell it was handed. One
+// elected lane/wave => per-wave block-execution counts. The flush is unchanged
+// (bb_flush_pw walks the contiguous counters from the slice base).
+extern "C" __device__ __noinline__ __attribute__((used))
+void bb_inc_one(void* counter) {
+    unsigned long long ex = __builtin_amdgcn_read_exec();
+    unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
+    if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
+    *(volatile unsigned*)counter += 1u;
+}
+
+extern "C" __device__ __noinline__ __attribute__((used))
+void pw_mark2(void* a, void* b) {
+    unsigned long long ex = __builtin_amdgcn_read_exec();
+    unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
+    if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
+    *(volatile unsigned*)a = 0xAAAAu;
+    *(volatile unsigned*)b = 0xBBBBu;
+}

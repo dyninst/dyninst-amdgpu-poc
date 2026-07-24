@@ -19,7 +19,9 @@ set(MUTATORS
   multikernel_instrument      # instrument several kernels in one code object
   capture_return_instrument   # capture a call's ABI return into a per-wave variable
   bb_count_instrument         # basic-block execution counter (getpc-free kernels), file flush
+  bb_count_multivar_instrument # same counter, one per-wave var PER block (multi-var style)
   real_write_instrument       # pass-by-address vs by-value fwrite egress eval
+  multivar_instrument         # multiple per-wave variables at distinct arena offsets
 )
 foreach(m ${MUTATORS})
   add_executable(${m} ${m}.C)
