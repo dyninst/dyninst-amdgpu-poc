@@ -84,6 +84,11 @@ static std::atomic<bool> g_run{true};
 
 // The CPU-side ring service loop lives in hostcall_service.cpp (shared with preload.cpp).
 
+#include <chrono>
+// HIP managed-memory alloc (linked via -lamdhip64), used when PW_MANAGED is set to compare
+// managed vs fine-grained for the host-read per-wave buffer. hipError_t==int; flag 1=Global.
+extern "C" int hipMallocManaged(void** ptr, size_t size, unsigned int flags);
+
 int main(int argc, char** argv) {
     const char* mutatee = (argc > 1) ? argv[1] : "vectoradd.inst.co";
     const char* instlib = (argc > 2) ? argv[2] : "hostcall_lib.aliased.elf";
@@ -117,6 +122,8 @@ int main(int argc, char** argv) {
               HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT, "", &exe));
     HSA_CHECK(hsa_executable_agent_global_variable_define(exe, gpu.agent, "mailbox", mbox));
     printf("[host] defined 'mailbox' -> %p\n", (void*)mbox);
+    // (The old global-base g_pw_base symbol was retired — the per-wave slice is now
+    //  delivered purely via the launch-time kernarg PerWaveBuf, no host variable-define.)
 
     auto load = [&](const char* path) {
         int fd = open(path, O_RDONLY);
@@ -167,17 +174,29 @@ int main(int argc, char** argv) {
     uint32_t n_waves = (uint32_t)((N + 63) / 64);          // wave64
     size_t   instbuf_sz = INST_HEADER + (size_t)n_waves * INST_SLOT_SIZE;
     void*    instbuf = nullptr;
-    HSA_CHECK(hsa_amd_memory_pool_allocate(fg.pool, instbuf_sz, 0, &instbuf));
-    HSA_CHECK(hsa_amd_agents_allow_access(1, agents, nullptr, instbuf));
-    memset(instbuf, 0, instbuf_sz);                        // fine-grained: CPU-zeroable
-    printf("[host] per-wave buffer @ %p  (%u waves x %u + %u hdr = %zu bytes)\n",
-           instbuf, n_waves, INST_SLOT_SIZE, INST_HEADER, instbuf_sz);
+    bool     managed = getenv("PW_MANAGED") != nullptr;    // evaluate managed vs fine-grained
+    if (managed) {
+        if (hipMallocManaged(&instbuf, instbuf_sz, 1u) != 0 || !instbuf) {
+            fprintf(stderr, "[host] hipMallocManaged(%zu) failed\n", instbuf_sz); return 1; }
+        memset(instbuf, 0, instbuf_sz);
+        printf("[host] per-wave buffer: hipMallocManaged @ %p  (%u waves x %u = %zu bytes)\n",
+               instbuf, n_waves, INST_SLOT_SIZE, instbuf_sz);
+    } else {
+        HSA_CHECK(hsa_amd_memory_pool_allocate(fg.pool, instbuf_sz, 0, &instbuf));
+        HSA_CHECK(hsa_amd_agents_allow_access(1, agents, nullptr, instbuf));
+        memset(instbuf, 0, instbuf_sz);                    // fine-grained: CPU-zeroable
+        printf("[host] per-wave buffer: fine-grained @ %p  (%u waves x %u = %zu bytes)\n",
+               instbuf, n_waves, INST_SLOT_SIZE, instbuf_sz);
+    }
 
-    // Workgroup size: default = N (single workgroup, historical behavior).
-    // HOSTCALL_WG=<n> splits the grid into ceil(N/n) workgroups so blockIdx.x
-    // varies — needed to validate implicit-arg (blockIdx) forwarding.
-    uint32_t wg = (uint32_t)N;
+    // Workgroup size: default = min(N, 1024). A single workgroup for N<=1024 (historical
+    // behavior), but capped at the gfx908 hardware max of 1024 work-items — beyond that the
+    // dispatch packet's workgroup_size_x is invalid (async queue INVALID_ARGUMENT). Larger
+    // grids split into ceil(N/wg) workgroups; the hidden block_count/group_size args below
+    // are already set for that. HOSTCALL_WG=<n> overrides (also clamped to 1024).
+    uint32_t wg = (uint32_t)(N < 1024 ? N : 1024);
     if (const char* e = getenv("HOSTCALL_WG")) { uint32_t v = (uint32_t)atoi(e); if (v) wg = v; }
+    if (wg > 1024) { fprintf(stderr, "[host] wg %u > 1024 max; clamping\n", wg); wg = 1024; }
     const uint32_t n_blocks = ((uint32_t)N + wg - 1) / wg;
 
     // Kernarg: C, A, B, N  (explicit args at the front of the segment).
@@ -219,6 +238,7 @@ int main(int argc, char** argv) {
            N, wg, (unsigned)n_blocks);
 
     // Enqueue the dispatch: grid = N threads, workgroup = wg threads.
+    auto t0 = std::chrono::steady_clock::now();            // time kernel + flush (hostcalls)
     uint64_t idx = hsa_queue_load_write_index_relaxed(queue);
     const uint32_t mask = queue->size - 1;
     hsa_kernel_dispatch_packet_t* slot =
@@ -244,7 +264,9 @@ int main(int argc, char** argv) {
     // Wait for the kernel (it makes hostcalls the service thread handles).
     hsa_signal_value_t v = hsa_signal_wait_scacquire(done, HSA_SIGNAL_CONDITION_LT, 1,
                                                      (uint64_t)10e9, HSA_WAIT_STATE_BLOCKED);
-    printf("[host] kernel completion = %ld\n", (long)v);
+    auto t1 = std::chrono::steady_clock::now();
+    printf("[host] kernel completion = %ld  (kernel+flush wall = %ld us)\n", (long)v,
+           (long)std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
 
     // Stop the service thread.
     g_run.store(false, std::memory_order_release);
@@ -259,9 +281,9 @@ int main(int argc, char** argv) {
         printf("[host] per-wave buffer (one slice per wave):\n");
         for (uint32_t w = 0; w < n_waves; w++) {
             size_t o = (INST_HEADER + (size_t)w * INST_SLOT_SIZE) / 4;
-            printf("[host]   wave %2u slice[0]=%d (probe hits)  slice[1]=%d (active lanes)\n",
-                   w, (int)pw[o], (int)pw[o + 1]);
-            if (pw[o]) nonzero++;
+            printf("[host]   wave %2u counts[0..3] = %u %u %u %u\n",
+                   w, pw[o], pw[o + 1], pw[o + 2], pw[o + 3]);
+            if (pw[o] || pw[o + 1] || pw[o + 2] || pw[o + 3]) nonzero++;
         }
         printf("[host] per-wave slots written: %d / %u\n", nonzero, n_waves);
     }

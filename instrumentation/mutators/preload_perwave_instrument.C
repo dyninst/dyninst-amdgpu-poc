@@ -1,9 +1,10 @@
 /*
  *  preload_perwave_instrument.C — per-wave multi-file instrumentation for the
- *  LD_PRELOAD path. Inserts NULLARY pwg_open @entry and pwg_flush @exit. Each wave
- *  opens its own "wave_<wid>.txt" (via the gpu_fopen hostcall) and writes a line to
- *  it, indexing a GLOBAL per-wave buffer (g_pw_base) the host defines — no kernarg
- *  growth, unlike the dyninst per-wave variable (which the HIP runtime can't fill).
+ *  LD_PRELOAD path. Inserts pw_open(pw.address()) @entry and pw_flush(pw.address())
+ *  @exit. Each wave opens its own "wave_<wid>.txt" (via the gpu_fopen hostcall) and
+ *  writes a line to it, keeping per-wave state in its slice of a Dyninst-managed per-wave
+ *  variable (BPatch_perWaveVar) delivered by the launch-time kernarg PerWaveBuf — the
+ *  preload allocates the buffer and appends it as the extra kernarg.
  *
  *  Usage: preload_perwave_instrument <in.co> <out.co> [kernel] [combined_lib]
  */
@@ -43,25 +44,32 @@ int main(int argc, char **argv) {
   }
   BPatch_image *img = bin->getImage();
 
-  BPatch_function *pwgOpen  = find(img, "pwg_open");
-  BPatch_function *pwgFlush = find(img, "pwg_flush");
-  BPatch_function *kernel   = find(img, kernelName);
-  if (!pwgOpen || !pwgFlush || !kernel) {
-    std::cerr << "missing pwg_open/pwg_flush or kernel '" << kernelName << "'\n";
+  BPatch_function *pwOpen  = find(img, "pw_open");
+  BPatch_function *pwFlush = find(img, "pw_flush");
+  BPatch_function *kernel  = find(img, kernelName);
+  if (!pwOpen || !pwFlush || !kernel) {
+    std::cerr << "missing pw_open/pw_flush or kernel '" << kernelName << "'\n";
     return EXIT_FAILURE;
   }
 
-  BPatch_Vector<BPatch_snippet *> noArgs;
-  BPatch_funcCallExpr openCall(*pwgOpen, noArgs), flushCall(*pwgFlush, noArgs);
-  if (auto *e = kernel->findPoint(BPatch_entry))
-    bin->insertSnippet(openCall, *e, BPatch_callBefore, BPatch_lastSnippet);
-  if (auto *x = kernel->findPoint(BPatch_exit))
-    bin->insertSnippet(flushCall, *x, BPatch_callBefore, BPatch_lastSnippet);
+  // Dyninst-managed per-wave variable; address() is THIS wave's slice base (kernarg PerWaveBuf).
+  BPatch_perWaveVar pw(/*bytesPerWave=*/4096);
+
+  if (auto *e = kernel->findPoint(BPatch_entry)) {
+    BPatch_snippet base = pw.address();                 // this wave's slice pointer
+    BPatch_Vector<BPatch_snippet *> args{ &base };
+    bin->insertSnippet(BPatch_funcCallExpr(*pwOpen, args), *e, BPatch_callBefore, BPatch_lastSnippet);
+  }
+  if (auto *x = kernel->findPoint(BPatch_exit)) {
+    BPatch_snippet base = pw.address();
+    BPatch_Vector<BPatch_snippet *> args{ &base };
+    bin->insertSnippet(BPatch_funcCallExpr(*pwFlush, args), *x, BPatch_callBefore, BPatch_lastSnippet);
+  }
 
   if (!bin->writeFile(out)) {
     std::cerr << "failed to write '" << out << "'\n";
     return EXIT_FAILURE;
   }
-  std::cout << "wrote " << out << " (pwg_open @entry, pwg_flush @exit)\n";
+  std::cout << "wrote " << out << " (pw_open(pw.address()) @entry, pw_flush(pw.address()) @exit)\n";
   return EXIT_SUCCESS;
 }

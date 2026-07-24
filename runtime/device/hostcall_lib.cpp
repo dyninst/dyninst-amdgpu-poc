@@ -112,9 +112,13 @@ int64_t gpu_fopen(const char* filename, const char* mode) {
     return (int64_t)(((unsigned long long)hi << 32) | (unsigned long long)lo);
 }
 
-// --- hostcall: fwrite(handle, data, size) -> bytes written ------------------
+// --- hostcall: BY-VALUE fwrite, capped at HC_DATA_SIZE (512B) ----------------
+// Copies the payload INTO the ring slot, so it works for ANY source memory (string
+// literals, device-local/scratch buffers) — but a single call is capped at 512B and
+// chunking it can interleave with other waves on a shared file. Prefer gpu_fwrite
+// (pass-by-address) for host-readable staged data; use this for literals/local data.
 extern "C" __device__ __noinline__ __attribute__((used))
-int gpu_fwrite(int64_t handle, const char* data, int size) {
+int gpu_fwrite_256(int64_t handle, const char* data, int size) {
     int n = 0;
     if (hc_first_active_lane()) {
         HostcallSlot* s = hc_acquire();
@@ -124,6 +128,27 @@ int gpu_fwrite(int64_t handle, const char* data, int size) {
         s->handle = handle;
         s->size   = size;
         hc_call_and_wait(s, HC_OP_FWRITE);
+        n = s->retval;
+        hc_release(s);
+    }
+    return n;
+}
+
+// --- hostcall: fwrite from a DEVICE ADDRESS (host reads the record directly) --
+// The DEFAULT fwrite: no 512B cap, ONE atomic host fwrite per record (no chunk-tearing
+// on a shared file). REQUIRES `data` to be in host-readable memory (managed / fine-
+// grained / pinned) — which is where probes stage per-wave records. hc_call_and_wait's
+// system fence publishes the record's stores before the CPU reads them. For data that is
+// NOT host-readable (string literals, device-local buffers), use gpu_fwrite_256.
+extern "C" __device__ __noinline__ __attribute__((used))
+int gpu_fwrite(int64_t handle, const void* data, int size) {
+    int n = 0;
+    if (hc_first_active_lane()) {
+        HostcallSlot* s = hc_acquire();
+        s->handle = handle;
+        s->bufptr = (int64_t)(uintptr_t)data;   // device VA; the host reads it in place
+        s->size   = size;
+        hc_call_and_wait(s, HC_OP_FWRITE_PTR);
         n = s->retval;
         hc_release(s);
     }

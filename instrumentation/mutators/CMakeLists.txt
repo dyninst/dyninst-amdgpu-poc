@@ -15,10 +15,11 @@ find_package(Dyninst REQUIRED COMPONENTS dyninstAPI)
 set(MUTATORS
   test_amdgpu_instrument      # full capability demonstrator
   minimal_instrument          # canonical minimal example (record EXEC at a few sites)
-  preload_perwave_instrument  # per-wave multi-file (nullary pwg_open/pwg_flush)
+  preload_perwave_instrument  # per-wave multi-file (pw_open/pw_flush via kernarg PerWaveBuf)
   multikernel_instrument      # instrument several kernels in one code object
   capture_return_instrument   # capture a call's ABI return into a per-wave variable
-  bb_count_instrument         # basic-block execution counter (getpc-free kernels)
+  bb_count_instrument         # basic-block execution counter (getpc-free kernels), file flush
+  real_write_instrument       # pass-by-address vs by-value fwrite egress eval
 )
 foreach(m ${MUTATORS})
   add_executable(${m} ${m}.C)

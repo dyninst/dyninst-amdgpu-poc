@@ -9,7 +9,7 @@
 # Override DYNINST_PREFIX / ROCM here or on the command line.
 include config.mk
 
-.PHONY: build runtime userlib host mutatees mutators clean
+.PHONY: build runtime userlib host mutatees mutators clean clean-experiments
 
 build: runtime userlib host mutatees
 
@@ -33,3 +33,8 @@ clean:
 	-$(MAKE) -C instrumentation/user_lib clean
 	-$(MAKE) -C mutatees/vectoradd clean
 	-rm -rf instrumentation/mutators/build experiments/runs
+
+clean-experiments:             ## remove ONLY experiment outputs (keeps built libs/mutators/EXEs)
+	-rm -rf experiments/runs
+	-rm -f mutatees/vectoradd/*.co mutatees/vectoradd/*.bundle \
+	       mutatees/vectoradd/*.0.hipv4* mutatees/vectoradd/*.0.host-*

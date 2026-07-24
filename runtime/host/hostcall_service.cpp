@@ -12,6 +12,18 @@ static bool verbose() { static bool v = getenv("HOSTCALL_VERBOSE") != nullptr; r
 // Service one request-ready slot in place (reads the request fields, writes the result).
 static void service_slot(HostcallSlot* s, std::map<std::string, FILE*>& files,
                          FILE*& primary, long& opens, long& writes, long& closes) {
+    // DIAGNOSTIC (HOSTCALL_NOOP): respond so the GPU's hc_call_and_wait completes, but do
+    // NOT read the (possibly managed) record buffer or do host I/O. Isolates whether the
+    // CPU touching the managed buffer mid-kernel is what faults the GPU (XNACK-off migration).
+    static bool noop = getenv("HOSTCALL_NOOP") != nullptr;
+    if (noop) {
+        switch (s->opcode) {
+        case HC_OP_FOPEN: s->handle = 1; s->retval = 0; break;          // dummy non-null handle
+        case HC_OP_FWRITE: case HC_OP_FWRITE_PTR: case HC_OP_FREAD: s->retval = s->size; break;
+        default: s->retval = 0; break;
+        }
+        return;                                                          // never touch bufptr/data/files
+    }
     switch (s->opcode) {
     case HC_OP_FOPEN: {
         std::string name(s->path);
@@ -29,6 +41,14 @@ static void service_slot(HostcallSlot* s, std::map<std::string, FILE*>& files,
     case HC_OP_FWRITE: {
         FILE* f = (FILE*)(uintptr_t)s->handle;            // per-wave file (from gpu_fopen)
         int n = f ? (int)fwrite(s->data, 1, s->size, f) : -1;
+        if (f) fflush(f);
+        writes++;
+        s->retval = n;
+        break; }
+    case HC_OP_FWRITE_PTR: {                              // fwrite straight from the device VA
+        FILE* f = (FILE*)(uintptr_t)s->handle;
+        const void* p = (const void*)(uintptr_t)s->bufptr; // host-readable (managed/fine-grained)
+        int n = (f && p) ? (int)fwrite(p, 1, s->size, f) : -1;
         if (f) fflush(f);
         writes++;
         s->retval = n;

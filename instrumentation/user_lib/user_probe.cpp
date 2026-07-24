@@ -54,7 +54,8 @@ void pw_probe(void* slice) {
 // Our fopen/fwrite runtime (defined in hostcall_lib.cpp, same code object). Match
 // its exact signatures (int64_t handle) so the single-TU reg-usage compile agrees.
 extern "C" __device__ int64_t gpu_fopen(const char* filename, const char* mode);
-extern "C" __device__ int     gpu_fwrite(int64_t handle, const char* data, int size);
+extern "C" __device__ int     gpu_fwrite(int64_t handle, const void* data, int size);      // pass-by-address (default)
+extern "C" __device__ int     gpu_fwrite_256(int64_t handle, const char* data, int size);  // by-value, capped 512B
 
 static __device__ int put_str(char* b, int i, const char* s) { while (*s) b[i++] = *s++; return i; }
 static __device__ int put_uint(char* b, int i, unsigned v) {
@@ -139,96 +140,87 @@ int64_t pw_openfile() {
 // value()). Shows the held handle used as fwrite's first parameter.
 extern "C" __device__ __noinline__ __attribute__((used))
 void pw_writeln(int64_t handle) {
-    gpu_fwrite(handle, "hello from a wave\n", 18);
+    gpu_fwrite_256(handle, "hello from a wave\n", 18);   // literal (device rodata): by-value
 }
 
-// ---- GLOBAL-BASE per-wave model (for the LD_PRELOAD path) ---------------------
-// The dyninst per-wave variable delivers this wave's slice via an appended KERNARG
-// slot that a host launcher fills. Under LD_PRELOAD the HIP runtime builds the kernarg
-// itself and won't fill an appended slot, so instead we resolve a GLOBAL per-wave
-// buffer base the same way as `mailbox` (host variable-define) and let each wave index
-// its own slice by its logical flattened wave id. That makes these probes NULLARY —
-// dyninst inserts no-arg calls (like hc_open/hc_close) — with no kernarg growth.
-extern "C" { extern __attribute__((visibility("default"))) __device__ char g_pw_base[]; }
-#define PWG_STRIDE 4096u   // bytes per wave slice (must match the host allocation stride)
+// ---- BB COUNTER (Dyninst-managed per-wave variable, slice passed by the call ABI) ----
+// The per-wave slice base is delivered at LAUNCH time via the kernarg PerWaveBuf (a
+// BPatch_perWaveVar): the mutator passes pw.address() (this wave's slice) as bb_inc's
+// first argument, so Dyninst OWNS the variable and the ABI call hands its base pointer
+// to the helper. One elected lane => per-wave BLOCK EXECUTIONS (no atomics). This is the
+// sole per-wave model now (the old g_pw_base host-variable-define path was retired — a
+// load-time symbol cannot carry a launch-time buffer address). Slice layout (STRIDE
+// 4096): u32 counts[] at offset 0 (so a launcher slice[k] dump shows them); a text
+// scratch area at BBI_TEXT_OFF for the flush, kept clear of counts[].
+#define BBI_TEXT_OFF 2048u     // filename + report text built here for bb_flush_pw
 
-static __device__ char* pwg_slice() {
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;   // logical flattened wid
-    return g_pw_base + (unsigned long)wid * PWG_STRIDE;
-}
-
-// ENTRY: this wave opens its OWN file "wave_<wid>.txt" and stashes the handle in its
-// slice. One elected lane does the open (gpu_fopen returns the real handle only there).
 extern "C" __device__ __noinline__ __attribute__((used))
-void pwg_open() {
+void bb_inc(void* base, int bbid) {
+    unsigned long long ex = __builtin_amdgcn_read_exec();
+    unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
+    unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
+    if (pos != 0) return;                              // one lane/wave
+    ((volatile unsigned*)base)[(unsigned)bbid] += 1u;  // counts[bbid] at slice+0
+}
+
+// EXIT flush for the bb_inc counter: read counts[] from THIS wave's slice base, write
+// bbcount_<wid>.txt via the fopen/fwrite hostcalls. Slice-arg counterpart of the retired
+// global-base bb_flush — the mutator passes the SAME pw.address() it passed to bb_inc.
+extern "C" __device__ __noinline__ __attribute__((used))
+void bb_flush_pw(void* base, int nbb) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
     if (pos != 0) return;
     unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    char* b = pwg_slice();
-    int i = 16;                                        // name buffer at slice+16
-    i = put_str(b, i, "wave_"); i = put_uint(b, i, wid); i = put_str(b, i, ".txt");
-    b[i] = '\0';
-    long long h = gpu_fopen(b + 16, "w");              // this wave's file
-    *(volatile long long*)(b + 0) = h;                 // stash handle for pwg_flush
-}
-
-// EXIT: this wave writes one line to its own file and closes it.
-extern "C" __device__ __noinline__ __attribute__((used))
-void pwg_flush() {
-    unsigned long long ex = __builtin_amdgcn_read_exec();
-    unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
-    unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
-    if (pos != 0) return;
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    char* b = pwg_slice();
-    long long h = *(volatile long long*)(b + 0);       // this wave's handle (from pwg_open)
-    int i = 16;
-    i = put_str(b, i, "wave "); i = put_uint(b, i, wid); i = put_str(b, i, " reporting in\n");
-    gpu_fwrite(h, b + 16, i - 16);                     // -> this wave's own file
-}
-
-// ---- BASIC-BLOCK COUNTER (global-base per-wave model) --------------------------
-// Per-wave, per-basic-block execution counter. The mutator inserts `bb_hit(bbid)` at
-// EACH basic-block entry (bbid = the block's stable index) and `bb_flush(nbb)` at
-// kernel EXIT. Each wave owns its slice of g_pw_base; one elected lane increments, so
-// the count is per-wave BLOCK EXECUTIONS (how many times the wave ran that block) with
-// NO atomics. Slice layout (STRIDE=4096): counts[] as u32 at BBC_COUNTS_OFF; a text
-// scratch area at BBC_TEXT_OFF for the flush (kept clear of counts).
-#define BBC_COUNTS_OFF 64u     // u32 counts[nbb] here -> supports nbb up to (2048-64)/4
-#define BBC_TEXT_OFF   2048u   // filename + report text built here for the flush
-
-extern "C" __device__ __noinline__ __attribute__((used))
-void bb_hit(int bbid) {
-    unsigned long long ex = __builtin_amdgcn_read_exec();
-    unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
-    unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
-    if (pos != 0) return;                              // one lane/wave: count wave-block-execs
-    char* b = pwg_slice();
-    *(volatile unsigned*)(b + BBC_COUNTS_OFF + (unsigned)bbid * 4u) += 1u;
-}
-
-extern "C" __device__ __noinline__ __attribute__((used))
-void bb_flush(int nbb) {
-    unsigned long long ex = __builtin_amdgcn_read_exec();
-    unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
-    unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
-    if (pos != 0) return;
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    char* b = pwg_slice();
-    volatile unsigned* counts = (volatile unsigned*)(b + BBC_COUNTS_OFF);
-    char* t = b + BBC_TEXT_OFF;                        // global text area (flat-loadable)
-    // filename bbcount_<wid>.txt, built at the end of the text area
-    char* nm = t + 1024; int fi = 0;
+    char* b = (char*)base;
+    volatile unsigned* counts = (volatile unsigned*)b; // counts[] at slice+0 (matches bb_inc)
+    char* t = b + BBI_TEXT_OFF;                        // global text area (flat-loadable)
+    char* nm = t + 1024; int fi = 0;                   // filename at end of text area
     fi = put_str(nm, fi, "bbcount_"); fi = put_uint(nm, fi, wid); fi = put_str(nm, fi, ".txt"); nm[fi] = '\0';
     long long h = gpu_fopen(nm, "w");
-    // one report line per block: "bb <k>: <count>\n"
-    int i = 0;
+    int i = 0;                                         // one line per block: "bb <k>: <count>\n"
     for (int k = 0; k < nbb; k++) {
         i = put_str(t, i, "bb ");  i = put_uint(t, i, (unsigned)k);
         i = put_str(t, i, ": ");   i = put_uint(t, i, counts[k]);
         t[i++] = '\n';
     }
     gpu_fwrite(h, t, i);                               // -> bbcount_<wid>.txt
+}
+
+// ---- REAL-FWRITE eval: pass-by-address vs by-value egress ----------------------
+// Both take THIS wave's slice (a PerWaveBuf pointer; host-readable when the launcher's
+// per-wave buffer is fine-grained/managed), open real_/bv_<wid>.txt, format an nbytes
+// record into the slice, and stream it out. real_write uses gpu_real_fwrite (host reads
+// the record by address — no 512B cap, one atomic host fwrite); bv_write uses gpu_fwrite
+// (by-value copy into the ring — capped at 512B). Used to compare correctness + cost.
+static __device__ int pwr_fill(char* rec, unsigned wid, int nbytes) {
+    int n = 0; n = put_str(rec, n, "wave "); n = put_uint(rec, n, wid); n = put_str(rec, n, ": ");
+    for (; n < nbytes - 1; n++) rec[n] = (char)('A' + (n % 26));
+    rec[n++] = '\n';
+    return n;
+}
+extern "C" __device__ __noinline__ __attribute__((used))
+void real_write(void* slice, int nbytes) {
+    unsigned long long ex = __builtin_amdgcn_read_exec();
+    unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
+    if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
+    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    char* b = (char*)slice;
+    int i = 0; i = put_str(b, i, "real_"); i = put_uint(b, i, wid); i = put_str(b, i, ".txt"); b[i] = '\0';
+    long long h = gpu_fopen(b, "w");
+    char* rec = b + 128;
+    gpu_fwrite(h, rec, pwr_fill(rec, wid, nbytes));        // host reads `rec` by address (default)
+}
+extern "C" __device__ __noinline__ __attribute__((used))
+void bv_write(void* slice, int nbytes) {
+    unsigned long long ex = __builtin_amdgcn_read_exec();
+    unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
+    if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
+    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    char* b = (char*)slice;
+    int i = 0; i = put_str(b, i, "bv_"); i = put_uint(b, i, wid); i = put_str(b, i, ".txt"); b[i] = '\0';
+    long long h = gpu_fopen(b, "w");
+    char* rec = b + 128;
+    gpu_fwrite_256(h, rec, pwr_fill(rec, wid, nbytes));    // by-value copy into the ring (≤512)
 }

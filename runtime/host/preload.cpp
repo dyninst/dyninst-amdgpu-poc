@@ -65,8 +65,6 @@ static std::mutex               g_mtx;
 static std::set<uint64_t>       g_inst_readers;    // reader handles we substituted
 static std::set<uint64_t>       g_augmented_exes;  // executables already given lib+mailbox
 static HostcallMailbox*         g_mbox = nullptr;   // one shared mailbox (host-coherent)
-static void*                    g_pw_buf = nullptr; // global per-wave buffer (defined as g_pw_base)
-static size_t                   g_pw_bytes = 0;     // its size (HOSTCALL_PW_BYTES; 0 => disabled)
 static std::thread              g_svc;
 static std::atomic<bool>        g_run{true};
 static std::atomic<bool>        g_svc_started{false};
@@ -202,21 +200,6 @@ static bool ensure_runtime(hsa_agent_t gpu) {
     memset(g_mbox, 0, sizeof(*g_mbox));
     for (uint32_t i = 0; i < HC_NSLOTS; i++) g_mbox->slots[i].turn = i;  // ring generation gates
 
-    // Optional global per-wave buffer (the LD_PRELOAD substitute for the kernarg-based
-    // dyninst per-wave variable): allocate once, GPU-accessible, defined as `g_pw_base`.
-    if (const char* e = getenv("HOSTCALL_PW_BYTES")) {
-        g_pw_bytes = strtoul(e, nullptr, 0);
-        if (g_pw_bytes) {
-            if (hsa_amd_memory_pool_allocate(fg.pool, g_pw_bytes, 0, &g_pw_buf) != HSA_STATUS_SUCCESS) {
-                fprintf(stderr, "[preload] per-wave buffer alloc failed\n"); g_pw_buf = nullptr;
-            } else {
-                hsa_amd_agents_allow_access(1, &gpu, nullptr, g_pw_buf);
-                memset(g_pw_buf, 0, g_pw_bytes);
-                fprintf(stderr, "[preload] per-wave buffer g_pw_base @ %p (%zu B)\n", g_pw_buf, g_pw_bytes);
-            }
-        }
-    }
-
     g_run.store(true);
     g_svc = std::thread(hostcall_service_loop, g_mbox, std::ref(g_run), "preload");
     g_svc_started.store(true);
@@ -233,13 +216,6 @@ static void augment_executable(hsa_executable_t exe, hsa_agent_t agent) {
 
     hsa_status_t s = real_hsa_executable_agent_global_variable_define(exe, agent, "mailbox", g_mbox);
     if (s != HSA_STATUS_SUCCESS) fprintf(stderr, "[preload] define(mailbox) status=%d\n", s);
-
-    // Define the per-wave buffer symbol if the co references it (per-wave instrumentation).
-    if (g_pw_buf) {
-        hsa_status_t ps = real_hsa_executable_agent_global_variable_define(exe, agent, "g_pw_base", g_pw_buf);
-        if (ps == HSA_STATUS_SUCCESS) fprintf(stderr, "[preload] defined g_pw_base -> %p\n", g_pw_buf);
-        // (a co that doesn't reference g_pw_base just ignores the definition)
-    }
 
     hsa_code_object_reader_t r{};
     s = real_hsa_code_object_reader_create_from_memory(g_lib_co().data(), g_lib_co().size(), &r);
@@ -330,6 +306,77 @@ hsa_status_t hsa_executable_freeze(hsa_executable_t exe, const char* options) {
           fprintf(stderr, "[preload] froze augmented exe=%lu status=%d (cross-object relocs resolved)\n",
                   exe.handle, s); }
     return s;
+}
+
+// ------------------------------------------------------------------ launch hook
+// Minimal HIP ABI decls (avoid a HIP header dependency in this .so). Layout must match
+// HIP's: dim3 = {uint32 x,y,z}; hipStream_t = opaque ptr; hipError_t = int-sized enum.
+namespace { struct pw_dim3 { uint32_t x, y, z; }; }
+// Managed (unified) memory: host-readable so pass-by-address gpu_fwrite works, and the
+// natural fit for unified memory. NOTE: the PerWaveBuf-instrumented path is not yet wired
+// end-to-end under the preload (HIP sizes the kernarg from the msgpack note, which doesn't
+// yet carry dyninst's bumped kernarg_segment_size — the launcher reads the KD directly and
+// works). Until that note<->KD kernarg sync lands, this buffer is exercised via the launcher.
+extern "C" int hipMallocManaged(void** ptr, size_t size, unsigned int flags);     // HIP C ABI
+extern "C" int hipMalloc(void** ptr, size_t size);                                // HIP C ABI (device)
+static hsa_status_t find_gpu(hsa_agent_t a, void* d) {
+    hsa_device_type_t t; hsa_agent_get_info(a, HSA_AGENT_INFO_DEVICE, &t);
+    if (t == HSA_DEVICE_TYPE_GPU) { auto* s=(AgentSearch*)d; s->agent=a; s->found=true; return HSA_STATUS_INFO_BREAK; }
+    return HSA_STATUS_SUCCESS;
+}
+
+static const uint32_t PW_STRIDE = 4096;   // bytes per wave (matches the emitter's slice stride)
+static void*          g_arg_buf = nullptr; // the per-wave arg buffer (device); this launch's
+
+// Append a per-wave buffer pointer as an extra EXPLICIT kernel argument. HIP copies
+// args[i] to the i-th explicit arg's .offset, so this only reaches the kernarg when the
+// co's metadata carries a matching extra global_buffer descriptor (tools/expand_args.py).
+//
+// The buffer is allocated HERE, at launch: the interceptor knows gridDim/blockDim, so it
+// sizes to the actual wave count (num_waves * PW_STRIDE) — the point of the kernarg-arg
+// model (the sole per-wave model now; the old global-base g_pw_base path was retired).
+// PW_NARGS = the kernel's ORIGINAL explicit-arg count (hipLaunchKernel's args[] has no
+// length). Test-scoped: one target kernel with exactly PW_NARGS explicit args; a general
+// path would map func->count via __hipRegisterFunction.
+extern "C"
+int hipLaunchKernel(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
+                    void** args, size_t sharedMemBytes, void* stream) {
+    BIND(hipLaunchKernel);
+    const char* ne = getenv("PW_NARGS");
+    if (ne && args) {
+        int n = atoi(ne);
+        uint64_t wpb    = ((uint64_t)dimBlocks.x * dimBlocks.y * dimBlocks.z + 63) / 64;  // waves/block
+        uint64_t nwaves = (uint64_t)numBlocks.x * numBlocks.y * numBlocks.z * wpb;
+        size_t   sz     = (size_t)nwaves * PW_STRIDE;
+        // PW_ALLOC selects the per-wave buffer's memory type (controlled experiment: does the
+        // fault depend on it, with the lib held constant?). Default managed.
+        const char* alloc = getenv("PW_ALLOC"); if (!alloc) alloc = "managed";
+        int rc = 0;
+        if (!strcmp(alloc, "device")) {
+            rc = hipMalloc(&g_arg_buf, sz);                                 // coarse-grained device
+        } else if (!strcmp(alloc, "fg")) {                                 // HSA fine-grained (launcher's)
+            static hsa_amd_memory_pool_t s_fg{}; static hsa_agent_t s_gpu{}; static bool s_ok=false;
+            if (!s_ok) { AgentSearch cpu{}, gpu{}; hsa_iterate_agents(find_cpu,&cpu); hsa_iterate_agents(find_gpu,&gpu);
+                PoolSearch fg{}; if (cpu.found) hsa_amd_agent_iterate_memory_pools(cpu.agent, find_fine_grained, &fg);
+                s_fg=fg.pool; s_gpu=gpu.agent; s_ok=cpu.found&&gpu.found&&fg.found; }
+            rc = (s_ok && hsa_amd_memory_pool_allocate(s_fg, sz, 0, &g_arg_buf)==HSA_STATUS_SUCCESS) ? 0 : 1;
+            if (!rc) hsa_amd_agents_allow_access(1, &s_gpu, nullptr, g_arg_buf);
+        } else {
+            rc = hipMallocManaged(&g_arg_buf, sz, 1u);                      // managed (default)
+        }
+        fprintf(stderr, "[preload] PW_ALLOC=%s\n", alloc);
+        if (rc != 0 || !g_arg_buf) {
+            fprintf(stderr, "[preload] per-wave alloc(%s,%zu) failed; launching unmodified\n", alloc, sz);
+            return real_hipLaunchKernel(func, numBlocks, dimBlocks, args, sharedMemBytes, stream);
+        }
+        std::vector<void*> na(args, args + n);
+        na.push_back(&g_arg_buf);     // HIP copies *(&g_arg_buf) = the device ptr into the kernarg
+        fprintf(stderr, "[preload] hipLaunchKernel: per-wave arg buf %p (%lu waves x %u = %zu B)"
+                        " appended as explicit arg[%d]\n", g_arg_buf, (unsigned long)nwaves,
+                        PW_STRIDE, sz, n);
+        return real_hipLaunchKernel(func, numBlocks, dimBlocks, na.data(), sharedMemBytes, stream);
+    }
+    return real_hipLaunchKernel(func, numBlocks, dimBlocks, args, sharedMemBytes, stream);
 }
 
 // ------------------------------------------------------------------ teardown

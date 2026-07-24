@@ -10,7 +10,7 @@ preload.so: preload.cpp hostcall_service.cpp hostcall_service.h ../hostcalls.h
 	$(CXX) -shared -fPIC $(CXXFLAGS) preload.cpp hostcall_service.cpp -o $@ $(LDFLAGS) -ldl
 
 launcher: launcher.cpp hostcall_service.cpp hostcall_service.h ../hostcalls.h
-	$(CXX) $(CXXFLAGS) launcher.cpp hostcall_service.cpp -o $@ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) launcher.cpp hostcall_service.cpp -o $@ $(LDFLAGS) -lamdhip64
 
 clean:
 	rm -f preload.so launcher

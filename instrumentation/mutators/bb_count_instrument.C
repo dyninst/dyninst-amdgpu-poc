@@ -1,11 +1,12 @@
 /*
  *  bb_count_instrument.C — basic-block execution counter (getpc-free kernels).
  *
- *  Enumerates the kernel's basic blocks and inserts `bb_hit(bbid)` at every block
- *  entry plus `bb_flush(nbb)` at kernel exit. Each wave accumulates per-block counts
- *  in its slice of the global per-wave buffer (g_pw_base); bb_flush writes
- *  bbcount_<wid>.txt. Run under the LD_PRELOAD path with HOSTCALL_PW_BYTES set so the
- *  preload allocates + defines g_pw_base.
+ *  Enumerates the kernel's basic blocks and inserts `bb_inc(pw.address(), bbid)` at
+ *  every block entry plus `bb_flush_pw(pw.address(), nbb)` at kernel exit. The per-wave
+ *  slice comes from a Dyninst-managed per-wave variable (BPatch_perWaveVar) delivered by
+ *  the launch-time kernarg PerWaveBuf; each wave accumulates per-block counts in its
+ *  slice and bb_flush_pw writes bbcount_<wid>.txt. Run under the LD_PRELOAD path (the
+ *  preload allocates the per-wave buffer + appends it as the extra kernarg).
  *
  *  NOTE: intended for getpc-free kernels (no calls / no PC-relative data). Relocating a
  *  getpc idiom mid-block is not yet supported (see docs/ROADMAP.md "Current frontier").
@@ -53,12 +54,15 @@ int main(int argc, char **argv) {
   }
   BPatch_image *img = bin->getImage();
   BPatch_function *kernel = find(img, kernelName);
-  BPatch_function *hit = find(img, "bb_hit");
-  BPatch_function *flush = find(img, "bb_flush");
-  if (!kernel || !hit || !flush) {
-    std::cerr << "missing kernel '" << kernelName << "' or bb_hit/bb_flush in lib\n";
+  BPatch_function *inc = find(img, "bb_inc");
+  BPatch_function *flush = find(img, "bb_flush_pw");
+  if (!kernel || !inc || !flush) {
+    std::cerr << "missing kernel '" << kernelName << "' or bb_inc/bb_flush_pw in lib\n";
     return EXIT_FAILURE;
   }
+
+  // Dyninst-managed per-wave variable; address() is THIS wave's slice base (kernarg PerWaveBuf).
+  BPatch_perWaveVar pw(/*bytesPerWave=*/4096);
 
   BPatch_flowGraph *cfg = kernel->getCFG();
   if (!cfg) { std::cerr << "getCFG() failed\n"; return EXIT_FAILURE; }
@@ -74,22 +78,22 @@ int main(int argc, char **argv) {
   for (int idx = 0; idx < nbb; idx++) {
     BPatch_point *p = v[idx]->findEntryPoint();
     if (!p) continue;
-    BPatch_Vector<BPatch_snippet *> args;
-    args.push_back(new BPatch_constExpr(idx));           // bbid, as an immediate
-    BPatch_funcCallExpr call(*hit, args);
-    if (bin->insertSnippet(call, *p, BPatch_callBefore, BPatch_lastSnippet))
+    BPatch_snippet base = pw.address();                  // this wave's slice pointer
+    BPatch_constExpr bbid(idx);
+    BPatch_Vector<BPatch_snippet *> args{ &base, &bbid };
+    if (bin->insertSnippet(BPatch_funcCallExpr(*inc, args), *p, BPatch_callBefore, BPatch_lastSnippet))
       inserted++;
   }
 
   if (auto *xpts = kernel->findPoint(BPatch_exit)) {   // findPoint returns a vector of points
-    BPatch_Vector<BPatch_snippet *> fargs;
-    fargs.push_back(new BPatch_constExpr(nbb));
-    BPatch_funcCallExpr fcall(*flush, fargs);
-    bin->insertSnippet(fcall, *xpts, BPatch_callBefore, BPatch_lastSnippet);
+    BPatch_snippet fbase = pw.address();
+    BPatch_constExpr nbbC(nbb);
+    BPatch_Vector<BPatch_snippet *> fargs{ &fbase, &nbbC };
+    bin->insertSnippet(BPatch_funcCallExpr(*flush, fargs), *xpts, BPatch_callBefore, BPatch_lastSnippet);
   }
 
   if (!bin->writeFile(out)) { std::cerr << "writeFile '" << out << "' failed\n"; return EXIT_FAILURE; }
   std::cout << "bb_count: " << nbb << " blocks, inserted " << inserted
-            << " bb_hit probe(s) + bb_flush@exit -> " << out << "\n";
+            << " bb_inc(pw.address(),bbid) probe(s) + bb_flush_pw@exit -> " << out << "\n";
   return EXIT_SUCCESS;
 }

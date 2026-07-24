@@ -22,6 +22,9 @@
 #define HC_OP_FWRITE   3
 #define HC_OP_FCLOSE   4
 #define HC_OP_WRITE_ID 5   // log a per-site scalar id (demonstrates argument passing)
+#define HC_OP_FWRITE_PTR 6 // fwrite from a DEVICE ADDRESS (host reads it directly): no
+                           // 512B cap, one atomic host fwrite per record. Requires the
+                           // buffer at `bufptr` to be host-readable (managed/fine-grained).
 
 #define HC_PATH_SIZE 128
 #define HC_MODE_SIZE 8
@@ -39,6 +42,7 @@ struct HostcallSlot {
     int32_t  opcode;               // HC_OP_*
     int32_t  _pad0;
     int64_t  handle;               // fopen: OUT handle; fread/fwrite/fclose: IN handle
+    int64_t  bufptr;               // FWRITE_PTR: IN device VA of the record (host reads it)
     int32_t  size;                 // fread/fwrite: IN requested byte count
     int32_t  retval;               // OUT: bytes transferred / error (<0)
     int32_t  arg;                  // WRITE_ID: IN per-site scalar id
