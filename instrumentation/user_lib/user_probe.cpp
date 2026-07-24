@@ -152,7 +152,8 @@ void pw_writeln(int64_t handle) {
 // load-time symbol cannot carry a launch-time buffer address). Slice layout (STRIDE
 // 4096): u32 counts[] at offset 0 (so a launcher slice[k] dump shows them); a text
 // scratch area at BBI_TEXT_OFF for the flush, kept clear of counts[].
-#define BBI_TEXT_OFF 2048u     // filename + report text built here for bb_flush_pw
+// (No fixed text offset: bb_flush_pw derives a COMPACT layout from nbb, so the per-wave
+//  slice sizes to the actual block count instead of a fixed 4096 — see the arena.)
 
 extern "C" __device__ __noinline__ __attribute__((used))
 void bb_inc(void* base, int bbid) {
@@ -174,9 +175,13 @@ void bb_flush_pw(void* base, int nbb) {
     if (pos != 0) return;
     unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
     char* b = (char*)base;
-    volatile unsigned* counts = (volatile unsigned*)b; // counts[] at slice+0 (matches bb_inc)
-    char* t = b + BBI_TEXT_OFF;                        // global text area (flat-loadable)
-    char* nm = t + 1024; int fi = 0;                   // filename at end of text area
+    volatile unsigned* counts = (volatile unsigned*)b; // counts[0..nbb) at slice+0 (matches bb_inc)
+    // COMPACT layout: counts end (8-aligned), then a 64B filename, then the report text.
+    // The mutator sizes the per-wave arena to exactly this (nbb-derived), so no fixed slot.
+    unsigned C = (((unsigned)(nbb > 0 ? nbb : 0) * 4u) + 7u) & ~7u;
+    char* nm = b + C;                                  // filename [C, C+64)
+    char* t  = b + C + 64u;                            // report text (flat-loadable global)
+    int fi = 0;
     fi = put_str(nm, fi, "bbcount_"); fi = put_uint(nm, fi, wid); fi = put_str(nm, fi, ".txt"); nm[fi] = '\0';
     long long h = gpu_fopen(nm, "w");
     int i = 0;                                         // one line per block: "bb <k>: <count>\n"

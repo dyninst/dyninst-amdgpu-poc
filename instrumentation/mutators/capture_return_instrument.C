@@ -63,8 +63,9 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // A per-wave variable holding a 64-bit file handle.
+  // A per-wave variable holding a 64-bit file handle at slice[0].
   BPatch_perWaveVar hv(/*bytesPerWave=*/8);
+  bin->allocatePerWave(8);                              // arena-size the stride (was fixed 4096)
 
   // Entry:  hv = pw_openfile()  -- capture the fopen HANDLE (the call's ABI return
   // value) into hv. No hand-written store: the call SITE captures it.
@@ -108,5 +109,6 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
   std::cout << "wrote " << out << " (hv=pw_openfile() @entry, " << done << " pw_writeln(hv.value()) sites)\n";
+  std::cout << "pw_stride=" << bin->perWaveStride() << "\n";   // harness bakes __dyninst_pw_stride
   return EXIT_SUCCESS;
 }

@@ -19,13 +19,19 @@ if "$OBJDUMP" -d "$EXE.co" | grep -q s_getpc; then
   echo "   ERROR: $KERNEL contains s_getpc; getpc-relocation not supported"; exit 1
 fi
 
-echo ">> [2] instrument pw_open @entry + pw_flush @exit (kernarg PerWaveBuf)"
-"$MUTATORS/preload_perwave_instrument" "$EXE.co" "$EXE.inst.co" "$KERNEL" "$USER_LIB" 2>&1 | grep -E '^wrote'
+echo ">> [2] instrument pw_open @entry + pw_flush @exit (arena-sized slice)"
+INST=$("$MUTATORS/preload_perwave_instrument" "$EXE.co" "$EXE.inst.co" "$KERNEL" "$USER_LIB" 2>/dev/null)
+echo "$INST" | grep -E '^wrote'
+STRIDE=$(echo "$INST" | grep -oE 'pw_stride=[0-9]+' | grep -oE '[0-9]+')
+echo "   per-wave STRIDE = ${STRIDE} B"
 
 echo ">> [3] sync .note to bumped KD; expand_args (+1 kernarg for the per-wave buffer)"
 cp -f "$EXE.inst.co" "$EXE.inst.synced.co"
 python3 "$TOOLS/sync_note_from_kd.py" "$EXE.inst.synced.co" >/dev/null
 python3 "$TOOLS/expand_args.py" "$EXE.inst.synced.co" --kernel "$KERNEL" --count 1 | grep -E "kernarg_segment_size"
+
+echo ">> [3b] bake __dyninst_pw_stride=${STRIDE} into the co (self-describing)"
+"$ROCM/lib/llvm/bin/llvm-objcopy" --add-symbol "__dyninst_pw_stride=${STRIDE},global" "$EXE.inst.synced.co"
 
 echo ">> [4] bundle"
 printf '' > /tmp/empty.host

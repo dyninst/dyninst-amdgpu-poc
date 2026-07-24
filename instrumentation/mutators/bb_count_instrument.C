@@ -61,9 +61,6 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // Dyninst-managed per-wave variable; address() is THIS wave's slice base (kernarg PerWaveBuf).
-  BPatch_perWaveVar pw(/*bytesPerWave=*/4096);
-
   BPatch_flowGraph *cfg = kernel->getCFG();
   if (!cfg) { std::cerr << "getCFG() failed\n"; return EXIT_FAILURE; }
   std::set<BPatch_basicBlock *> bbs;
@@ -73,6 +70,15 @@ int main(int argc, char **argv) {
     return a->getStartAddress() < b->getStartAddress();
   });
   const int nbb = (int)v.size();
+
+  // Size the per-wave slice from nbb (NOT a fixed 4096): u32 counts[nbb] (8-aligned),
+  // a 64B filename, then the report text (one "bb <k>: <count>\n" line per block). The
+  // arena rounds this up to a power of two = the STRIDE, baked into the emitter and the
+  // co (__dyninst_pw_stride). bb_inc/bb_flush_pw use offset 0, so this is one variable.
+  unsigned nbbu = (unsigned)(nbb > 0 ? nbb : 0);
+  unsigned bytes = (((nbbu * 4u) + 7u) & ~7u) + 64u + (nbbu * 20u) + 16u;
+  BPatch_perWaveVar pw(bytes);
+  bin->allocatePerWave(bytes);                         // reserve; sets perWaveStride()
 
   int inserted = 0;
   for (int idx = 0; idx < nbb; idx++) {
@@ -95,5 +101,7 @@ int main(int argc, char **argv) {
   if (!bin->writeFile(out)) { std::cerr << "writeFile '" << out << "' failed\n"; return EXIT_FAILURE; }
   std::cout << "bb_count: " << nbb << " blocks, inserted " << inserted
             << " bb_inc(pw.address(),bbid) probe(s) + bb_flush_pw@exit -> " << out << "\n";
+  // Machine-readable line the harness parses to inject __dyninst_pw_stride into the co.
+  std::cout << "pw_stride=" << bin->perWaveStride() << "\n";
   return EXIT_SUCCESS;
 }

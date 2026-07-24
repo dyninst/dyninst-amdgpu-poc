@@ -54,7 +54,10 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  BPatch_perWaveVar pw(/*bytesPerWave=*/4096);
+  // Per-wave slice: filename at [0,128) + the nbytes record staged at slice+128.
+  unsigned pwBytes = 128u + (unsigned)(nbytes > 0 ? nbytes : 0);
+  BPatch_perWaveVar pw(pwBytes);
+  bin->allocatePerWave(pwBytes);                        // arena-size the stride (was fixed 4096)
   int inserted = 0;
   if (auto *xpts = kernel->findPoint(BPatch_exit)) {
     BPatch_snippet base = pw.address();
@@ -67,5 +70,6 @@ int main(int argc, char **argv) {
   if (!bin->writeFile(out)) { std::cerr << "writeFile '" << out << "' failed\n"; return EXIT_FAILURE; }
   std::cout << "real_write: inserted " << probeName << "(pw.address(), " << nbytes
             << ") @exit (" << inserted << ") -> " << out << "\n";
+  std::cout << "pw_stride=" << bin->perWaveStride() << "\n";   // harness bakes __dyninst_pw_stride
   return EXIT_SUCCESS;
 }

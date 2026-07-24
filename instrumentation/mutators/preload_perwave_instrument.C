@@ -53,7 +53,10 @@ int main(int argc, char **argv) {
   }
 
   // Dyninst-managed per-wave variable; address() is THIS wave's slice base (kernarg PerWaveBuf).
-  BPatch_perWaveVar pw(/*bytesPerWave=*/4096);
+  // Slice holds the file handle at [0,8) and a short "wave <wid>: ..." line from slice+16.
+  const unsigned pwBytes = 256u;
+  BPatch_perWaveVar pw(pwBytes);
+  bin->allocatePerWave(pwBytes);                        // arena-size the stride (was fixed 4096)
 
   if (auto *e = kernel->findPoint(BPatch_entry)) {
     BPatch_snippet base = pw.address();                 // this wave's slice pointer
@@ -71,5 +74,6 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
   std::cout << "wrote " << out << " (pw_open(pw.address()) @entry, pw_flush(pw.address()) @exit)\n";
+  std::cout << "pw_stride=" << bin->perWaveStride() << "\n";   // harness bakes __dyninst_pw_stride
   return EXIT_SUCCESS;
 }

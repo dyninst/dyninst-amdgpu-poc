@@ -23,6 +23,7 @@
 
 #include "../hostcalls.h"      // shared mailbox ABI
 #include "hostcall_service.h"  // shared CPU ring service loop
+#include "co_stride.h"         // read __dyninst_pw_stride from the instrumented co
 
 #define HSA_CHECK(s) do {                                                      \
     hsa_status_t _s = (s);                                                     \
@@ -169,7 +170,8 @@ int main(int argc, char** argv) {
     // SLOT per grid wave. FINE-GRAINED (host-coherent) so the host can read what the
     // probes wrote after the kernel finishes. [M1a: probes write the base (offset 0);
     // per-wave wid*stride slicing lands in M1b.]
-    const uint32_t INST_SLOT_SIZE = 4096;                  // bytes per wave (stride; matches emitter)
+    const uint32_t INST_SLOT_SIZE = co_read_symbol_u32(mutatee, "__dyninst_pw_stride", 4096); // per-wave stride (self-describing)
+    printf("[host] per-wave STRIDE = %u B (from __dyninst_pw_stride)\n", INST_SLOT_SIZE);
     const uint32_t INST_HEADER    = 0;                     // logical wid => slot at wid*SLOT (no counter)
     uint32_t n_waves = (uint32_t)((N + 63) / 64);          // wave64
     size_t   instbuf_sz = INST_HEADER + (size_t)n_waves * INST_SLOT_SIZE;

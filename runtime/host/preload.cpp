@@ -52,6 +52,7 @@
 
 #include "../hostcalls.h"      // shared mailbox ABI
 #include "hostcall_service.h"  // shared CPU ring service loop
+#include "co_stride.h"         // read __dyninst_pw_stride from the instrumented co
 
 // ------------------------------------------------------------------ real syms
 #define BIND(name) \
@@ -325,7 +326,18 @@ static hsa_status_t find_gpu(hsa_agent_t a, void* d) {
     return HSA_STATUS_SUCCESS;
 }
 
-static const uint32_t PW_STRIDE = 4096;   // bytes per wave (matches the emitter's slice stride)
+// Per-wave STRIDE (bytes/wave). Self-describing: read from the __dyninst_pw_stride
+// absolute symbol baked into the instrumented co (HOSTCALL_INST_CO). PW_STRIDE env is a
+// debug override; 4096 is the fallback for un-instrumented / symbol-less cos.
+static uint32_t pw_stride() {
+    static uint32_t s = [] {
+        if (const char* e = getenv("PW_STRIDE")) return (uint32_t)strtoul(e, nullptr, 0);
+        uint32_t v = co_read_symbol_u32(getenv("HOSTCALL_INST_CO"), "__dyninst_pw_stride", 4096);
+        fprintf(stderr, "[preload] per-wave STRIDE = %u B (from __dyninst_pw_stride)\n", v);
+        return v;
+    }();
+    return s;
+}
 static void*          g_arg_buf = nullptr; // the per-wave arg buffer (device); this launch's
 
 // Append a per-wave buffer pointer as an extra EXPLICIT kernel argument. HIP copies
@@ -347,7 +359,7 @@ int hipLaunchKernel(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
         int n = atoi(ne);
         uint64_t wpb    = ((uint64_t)dimBlocks.x * dimBlocks.y * dimBlocks.z + 63) / 64;  // waves/block
         uint64_t nwaves = (uint64_t)numBlocks.x * numBlocks.y * numBlocks.z * wpb;
-        size_t   sz     = (size_t)nwaves * PW_STRIDE;
+        size_t   sz     = (size_t)nwaves * pw_stride();
         // PW_ALLOC selects the per-wave buffer's memory type (controlled experiment: does the
         // fault depend on it, with the lib held constant?). Default managed.
         const char* alloc = getenv("PW_ALLOC"); if (!alloc) alloc = "managed";
@@ -373,7 +385,7 @@ int hipLaunchKernel(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
         na.push_back(&g_arg_buf);     // HIP copies *(&g_arg_buf) = the device ptr into the kernarg
         fprintf(stderr, "[preload] hipLaunchKernel: per-wave arg buf %p (%lu waves x %u = %zu B)"
                         " appended as explicit arg[%d]\n", g_arg_buf, (unsigned long)nwaves,
-                        PW_STRIDE, sz, n);
+                        pw_stride(), sz, n);
         return real_hipLaunchKernel(func, numBlocks, dimBlocks, na.data(), sharedMemBytes, stream);
     }
     return real_hipLaunchKernel(func, numBlocks, dimBlocks, args, sharedMemBytes, stream);
