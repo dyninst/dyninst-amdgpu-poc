@@ -63,9 +63,8 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // A per-wave variable holding a 64-bit file handle at slice[0].
-  BPatch_perWaveVar hv(/*bytesPerWave=*/8);
-  bin->allocatePerWave(8);                              // arena-size the stride (was fixed 4096)
+  // A per-wave variable holding a 64-bit file handle at slice[0] (self-allocating).
+  BPatch_perWaveVar hv(bin, /*bytes=*/8);
 
   // Entry:  hv = pw_openfile()  -- capture the fopen HANDLE (the call's ABI return
   // value) into hv. No hand-written store: the call SITE captures it.

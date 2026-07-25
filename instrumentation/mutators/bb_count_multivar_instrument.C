@@ -76,8 +76,8 @@ int main(int argc, char **argv) {
   // (8-aligned, which equals bb_flush_pw's C = align8(nbb*4)) so the STRIDE covers it and
   // bb_flush_pw reads the counters + formats the report exactly as in bb_count_instrument.
   std::vector<BPatch_perWaveVar> ctr;
-  for (int k = 0; k < nbb; k++) ctr.emplace_back(4, bin->allocatePerWave(4, /*align=*/4));
-  bin->allocatePerWave(64u + (unsigned)nbb * 20u + 16u, /*align=*/8);   // flush scratch
+  for (int k = 0; k < nbb; k++) ctr.emplace_back(bin, 4, /*align=*/4);   // self-allocating, dense
+  bin->allocatePerWave(64u + (unsigned)nbb * 20u + 16u, /*align=*/8);    // flush scratch (no var)
 
   int inserted = 0;
   for (int k = 0; k < nbb; k++) {

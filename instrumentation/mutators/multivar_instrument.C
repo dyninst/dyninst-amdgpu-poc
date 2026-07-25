@@ -51,10 +51,9 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // Two per-wave variables at distinct arena offsets (v0 @0, v1 @8 after 8-alignment).
-  unsigned o0 = bin->allocatePerWave(4);
-  unsigned o1 = bin->allocatePerWave(4);
-  BPatch_perWaveVar v0(4, o0), v1(4, o1);
+  // Two self-allocating per-wave variables at distinct arena offsets (v0 @0, v1 @8 after
+  // 8-alignment). No manual allocatePerWave / offset threading.
+  BPatch_perWaveVar v0(bin, 4), v1(bin, 4);
 
   int inserted = 0;
   if (auto *xpts = kernel->findPoint(BPatch_exit)) {
@@ -65,8 +64,8 @@ int main(int argc, char **argv) {
   }
 
   if (!bin->writeFile(out)) { std::cerr << "writeFile '" << out << "' failed\n"; return EXIT_FAILURE; }
-  std::cout << "multivar: v0@" << o0 << " v1@" << o1 << ", inserted pw_mark2(v0,v1) @exit ("
-            << inserted << ") -> " << out << "\n";
+  std::cout << "multivar: v0@" << v0.offset() << " v1@" << v1.offset()
+            << ", inserted pw_mark2(v0,v1) @exit (" << inserted << ") -> " << out << "\n";
   std::cout << "pw_stride=" << bin->perWaveStride() << "\n";   // harness bakes __dyninst_pw_stride
   return EXIT_SUCCESS;
 }

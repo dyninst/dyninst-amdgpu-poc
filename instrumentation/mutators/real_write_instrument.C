@@ -56,8 +56,7 @@ int main(int argc, char **argv) {
 
   // Per-wave slice: filename at [0,128) + the nbytes record staged at slice+128.
   unsigned pwBytes = 128u + (unsigned)(nbytes > 0 ? nbytes : 0);
-  BPatch_perWaveVar pw(pwBytes);
-  bin->allocatePerWave(pwBytes);                        // arena-size the stride (was fixed 4096)
+  BPatch_perWaveVar pw(bin, pwBytes);                   // self-allocating (arena-sizes the stride)
   int inserted = 0;
   if (auto *xpts = kernel->findPoint(BPatch_exit)) {
     BPatch_snippet base = pw.address();

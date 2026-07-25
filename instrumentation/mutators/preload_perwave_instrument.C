@@ -55,8 +55,7 @@ int main(int argc, char **argv) {
   // Dyninst-managed per-wave variable; address() is THIS wave's slice base (kernarg PerWaveBuf).
   // Slice holds the file handle at [0,8) and a short "wave <wid>: ..." line from slice+16.
   const unsigned pwBytes = 256u;
-  BPatch_perWaveVar pw(pwBytes);
-  bin->allocatePerWave(pwBytes);                        // arena-size the stride (was fixed 4096)
+  BPatch_perWaveVar pw(bin, pwBytes);                   // self-allocating (arena-sizes the stride)
 
   if (auto *e = kernel->findPoint(BPatch_entry)) {
     BPatch_snippet base = pw.address();                 // this wave's slice pointer

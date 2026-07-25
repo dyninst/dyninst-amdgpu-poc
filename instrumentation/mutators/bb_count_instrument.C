@@ -77,8 +77,7 @@ int main(int argc, char **argv) {
   // co (__dyninst_pw_stride). bb_inc/bb_flush_pw use offset 0, so this is one variable.
   unsigned nbbu = (unsigned)(nbb > 0 ? nbb : 0);
   unsigned bytes = (((nbbu * 4u) + 7u) & ~7u) + 64u + (nbbu * 20u) + 16u;
-  BPatch_perWaveVar pw(bytes);
-  bin->allocatePerWave(bytes);                         // reserve; sets perWaveStride()
+  BPatch_perWaveVar pw(bin, bytes);                    // self-allocating (reserves + sets stride)
 
   int inserted = 0;
   for (int idx = 0; idx < nbb; idx++) {
