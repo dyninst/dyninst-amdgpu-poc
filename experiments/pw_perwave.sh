@@ -32,7 +32,7 @@ echo ">> [2] instrument real_write(pw.address(), $NBYTES) @exit (arena-sized sli
 INST=$("$MUTATORS/real_write_instrument" "$EXE.co" "$EXE.pw.co" "$KERNEL" "$USER_LIB" real_write "$NBYTES" 2>/dev/null)
 echo "$INST" | grep real_write:
 STRIDE=$(echo "$INST" | grep -oE 'pw_stride=[0-9]+' | grep -oE '[0-9]+')
-echo "   per-wave STRIDE = ${STRIDE} B  (arena-derived: 128 filename + ${NBYTES} record)"
+echo "   per-wave STRIDE = ${STRIDE} B  (arena-derived: 64 filename var + ${NBYTES} record var)"
 
 echo ">> [3] sync .note to bumped KD; expand_args (+1 kernarg for the per-wave buffer)"
 python3 "$TOOLS/sync_note_from_kd.py" "$EXE.pw.co" >/dev/null

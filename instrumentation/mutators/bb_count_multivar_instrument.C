@@ -6,8 +6,10 @@
  *  nbb separate 4-byte per-wave counters — densely packed by the arena at slice offsets
  *  0,4,8,... — and inserts bb_inc_one(ctr[k].address()) at each block entry. The probe just
  *  bumps the cell it is handed (no bbid, no indexing); Dyninst bakes each block's offset via
- *  the per-arg add. bb_flush_pw(ctr[0].address(), nbb) @exit walks the contiguous counters,
- *  so the on-disk output is identical to bb_count_instrument.
+ *  the per-arg add. bb_flush_pw(ctr[0], fname, report, nbb) @exit walks the contiguous
+ *  counters (ctr[0] is their base) and writes the report, so the on-disk output is identical
+ *  to bb_count_instrument. The filename/report staging buffers are declared as their own
+ *  per-wave variables, packed right after the counters.
  *
  *  This is a style choice for the end user: framework-owned per-block variables vs. one
  *  indexed array. getpc-free kernels only.
@@ -72,12 +74,16 @@ int main(int argc, char **argv) {
   const int nbb = (int)v.size();
 
   // One 4-byte per-wave counter per block, densely packed (4-aligned) => a contiguous
-  // counts[] at offsets 0,4,...,(nbb-1)*4. Then reserve the flush scratch right after
-  // (8-aligned, which equals bb_flush_pw's C = align8(nbb*4)) so the STRIDE covers it and
-  // bb_flush_pw reads the counters + formats the report exactly as in bb_count_instrument.
+  // counts[] at offsets 0,4,...,(nbb-1)*4  (ctr[0] is the array base). The filename/report
+  // staging buffers the flush needs are declared as their OWN per-wave variables right after
+  // the counters, so the arena sizes the STRIDE to cover everything and bb_flush_pw is handed
+  // each address directly — reading the counters + formatting the report exactly as in
+  // bb_count_instrument.
+  unsigned nbbu = (unsigned)(nbb > 0 ? nbb : 0);
   std::vector<BPatch_perWaveVar> ctr;
   for (int k = 0; k < nbb; k++) ctr.emplace_back(bin, 4, /*align=*/4);   // self-allocating, dense
-  bin->allocatePerWave(64u + (unsigned)nbb * 20u + 16u, /*align=*/8);    // flush scratch (no var)
+  BPatch_perWaveVar fname (bin, 64u);                  // filename staging
+  BPatch_perWaveVar report(bin, nbbu * 20u + 16u);     // report text (host-readable for fwrite)
 
   int inserted = 0;
   for (int k = 0; k < nbb; k++) {
@@ -89,17 +95,16 @@ int main(int argc, char **argv) {
       inserted++;
   }
 
-  if (auto *xpts = kernel->findPoint(BPatch_exit)) {
-    BPatch_perWaveVar base0(4, 0);                        // slice base (offset 0)
-    BPatch_snippet fbase = base0.address();
+  if (nbb > 0) if (auto *xpts = kernel->findPoint(BPatch_exit)) {
+    BPatch_snippet cAddr = ctr[0].address(), fAddr = fname.address(), rAddr = report.address();
     BPatch_constExpr nbbC(nbb);
-    BPatch_Vector<BPatch_snippet *> fargs{ &fbase, &nbbC };
+    BPatch_Vector<BPatch_snippet *> fargs{ &cAddr, &fAddr, &rAddr, &nbbC };
     bin->insertSnippet(BPatch_funcCallExpr(*flush, fargs), *xpts, BPatch_callBefore, BPatch_lastSnippet);
   }
 
   if (!bin->writeFile(out)) { std::cerr << "writeFile '" << out << "' failed\n"; return EXIT_FAILURE; }
   std::cout << "bb_count_multivar: " << nbb << " blocks, inserted " << inserted
-            << " bb_inc_one(ctr[k].address()) + bb_flush_pw@exit -> " << out << "\n";
+            << " bb_inc_one(ctr[k]) + bb_flush_pw(ctr[0],fname,report,nbb)@exit -> " << out << "\n";
   std::cout << "pw_stride=" << bin->perWaveStride() << "\n";
   return EXIT_SUCCESS;
 }

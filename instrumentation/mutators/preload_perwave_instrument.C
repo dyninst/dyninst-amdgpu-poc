@@ -1,10 +1,15 @@
 /*
  *  preload_perwave_instrument.C — per-wave multi-file instrumentation for the
- *  LD_PRELOAD path. Inserts pw_open(pw.address()) @entry and pw_flush(pw.address())
- *  @exit. Each wave opens its own "wave_<wid>.txt" (via the gpu_fopen hostcall) and
- *  writes a line to it, keeping per-wave state in its slice of a Dyninst-managed per-wave
- *  variable (BPatch_perWaveVar) delivered by the launch-time kernarg PerWaveBuf — the
- *  preload allocates the buffer and appends it as the extra kernarg.
+ *  LD_PRELOAD path. Inserts pw_open(...) @entry and pw_flush(...) @exit. Each wave opens
+ *  its own "wave_<wid>.txt" (via the gpu_fopen hostcall) and writes a line to it.
+ *
+ *  This is the SHOWCASE for named per-wave variables: rather than handing the probes one
+ *  slice they sub-divide by hand, the mutator declares FIVE per-wave variables and passes
+ *  each probe just the ones it needs. Three are persistent state carried from entry to
+ *  exit — handle (this wave's open file), hits, lanes — and two are transient staging —
+ *  name (the filename) and line (the output text). All are BPatch_perWaveVars delivered by
+ *  the launch-time kernarg PerWaveBuf; the preload allocates the buffer and appends it as
+ *  the extra kernarg.
  *
  *  Usage: preload_perwave_instrument <in.co> <out.co> [kernel] [combined_lib]
  */
@@ -52,19 +57,26 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // Dyninst-managed per-wave variable; address() is THIS wave's slice base (kernarg PerWaveBuf).
-  // Slice holds the file handle at [0,8) and a short "wave <wid>: ..." line from slice+16.
-  const unsigned pwBytes = 256u;
-  BPatch_perWaveVar pw(bin, pwBytes);                   // self-allocating (arena-sizes the stride)
+  // Named per-wave variables (each address() is THIS wave's own cell, delivered via the
+  // kernarg PerWaveBuf). handle/hits/lanes are shared between the two probes (persistent
+  // per-wave state); name/line are each probe's private staging buffer. The arena packs
+  // them and sizes the stride.
+  BPatch_perWaveVar handle(bin, 8u);                    // this wave's open file handle
+  BPatch_perWaveVar hits  (bin, 4u);                    // per-wave accumulator
+  BPatch_perWaveVar lanes (bin, 4u);                    // active-lane count at last hit
+  BPatch_perWaveVar name  (bin, 64u);                   // filename staging (pw_open)
+  BPatch_perWaveVar line  (bin, 128u);                  // output-line staging (pw_flush)
 
   if (auto *e = kernel->findPoint(BPatch_entry)) {
-    BPatch_snippet base = pw.address();                 // this wave's slice pointer
-    BPatch_Vector<BPatch_snippet *> args{ &base };
+    BPatch_snippet hAddr = handle.address(), hiAddr = hits.address(),
+                   lAddr = lanes.address(), nAddr = name.address();
+    BPatch_Vector<BPatch_snippet *> args{ &hAddr, &hiAddr, &lAddr, &nAddr };
     bin->insertSnippet(BPatch_funcCallExpr(*pwOpen, args), *e, BPatch_callBefore, BPatch_lastSnippet);
   }
   if (auto *x = kernel->findPoint(BPatch_exit)) {
-    BPatch_snippet base = pw.address();
-    BPatch_Vector<BPatch_snippet *> args{ &base };
+    BPatch_snippet hAddr = handle.address(), hiAddr = hits.address(),
+                   lAddr = lanes.address(), tAddr = line.address();
+    BPatch_Vector<BPatch_snippet *> args{ &hAddr, &hiAddr, &lAddr, &tAddr };
     bin->insertSnippet(BPatch_funcCallExpr(*pwFlush, args), *x, BPatch_callBefore, BPatch_lastSnippet);
   }
 
@@ -72,7 +84,8 @@ int main(int argc, char **argv) {
     std::cerr << "failed to write '" << out << "'\n";
     return EXIT_FAILURE;
   }
-  std::cout << "wrote " << out << " (pw_open(pw.address()) @entry, pw_flush(pw.address()) @exit)\n";
+  std::cout << "wrote " << out << " (pw_open(handle,hits,lanes,name) @entry, "
+               "pw_flush(handle,hits,lanes,line) @exit)\n";
   std::cout << "pw_stride=" << bin->perWaveStride() << "\n";   // harness bakes __dyninst_pw_stride
   return EXIT_SUCCESS;
 }

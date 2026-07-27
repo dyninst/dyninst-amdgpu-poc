@@ -40,10 +40,12 @@ extern "C" __device__ __noinline__ __attribute__((used))
 void pw_probe(void* slice) {
     // Elect the first active lane so exactly ONE lane per wave updates the slice
     // (each wave owns its slice, so a plain RMW is race-free — no atomics needed).
+    // Raw-slice style (the low-level escape hatch): this standalone marker keeps two
+    // counters at slice+8/+12. The wired-up pw_open/pw_flush pair instead uses NAMED
+    // per-wave variables the mutator declares — the preferred model.
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
-    // Per-wave slice layout (bytes): [0:7]=file handle  [8]=hits  [12]=lanes  [16..]=name/text.
     if (pos == 0) {
         char* b = (char*)slice;
         *(volatile int*)(b + 8) += 1;                 // hits: # probe sites this wave hit
@@ -66,54 +68,57 @@ static __device__ int put_uint(char* b, int i, unsigned v) {
     return i;
 }
 
-// PER-WAVE OPEN: each wave opens its OWN file "wave_<wid>.txt" and stashes the
-// returned handle in its slice, so later writes go to that file. gpu_fopen returns
-// the handle only on its elected lane; we do the format+open+store under a single
-// elected lane so the stored handle is the real one (not the -1 other lanes see).
-// The filename is built in the (global) slice — gpu_fopen reads its path via flat
-// loads, so a private/stack buffer would marshal garbage. Inserted at kernel ENTRY.
+// PER-WAVE OPEN / FLUSH: the mutator declares NAMED per-wave variables and hands each
+// probe exactly the ones it needs — no ad-hoc byte layout the probe has to sub-divide.
+// Three of them are genuine PERSISTENT per-wave state carried from the ENTRY probe to the
+// EXIT probe: `handle` (this wave's open file), `hits`, and `lanes`. Two are transient
+// staging: `name` (the filename pw_open builds for fopen) and `line` (the text pw_flush
+// streams out). All live in the host-readable per-wave arena, so gpu_fopen/gpu_fwrite —
+// which marshal their string/record args by flat loads from that VA — read them correctly.
+
+// PER-WAVE OPEN: each wave opens its OWN file "wave_<wid>.txt" and stashes the returned
+// handle in its `handle` variable, so the exit probe writes to that file. gpu_fopen returns
+// the handle only on its elected lane; we do the format+open+store under one elected lane so
+// the stored handle is the real one (not the -1 other lanes see). Inserted at kernel ENTRY.
 extern "C" __device__ __noinline__ __attribute__((used))
-void pw_open(void* slice) {
+void pw_open(void* handle_, void* hits_, void* lanes_, void* name_) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
     if (pos != 0) return;
     unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    char* b = (char*)slice;
-    int i = 16;                                        // name buffer at slice+16
-    i = put_str(b, i, "wave_"); i = put_uint(b, i, wid); i = put_str(b, i, ".txt");
-    b[i] = '\0';
-    long long h = gpu_fopen(b + 16, "w");              // this wave's file
-    *(volatile long long*)(b + 0) = h;                 // stash handle for pw_flush
-    *(volatile int*)(b + 8)  = 0;                      // reset hits
-    *(volatile int*)(b + 12) = 0;                      // reset lanes
+    char* nm = (char*)name_;                           // filename staging buffer
+    int i = 0;
+    i = put_str(nm, i, "wave_"); i = put_uint(nm, i, wid); i = put_str(nm, i, ".txt");
+    nm[i] = '\0';
+    long long h = gpu_fopen(nm, "w");                  // this wave's file
+    *(volatile long long*)handle_ = h;                 // stash handle for pw_flush
+    *(volatile int*)hits_  = 0;                         // reset per-wave accumulators
+    *(volatile int*)lanes_ = 0;
 }
 
-// PER-WAVE FLUSH: read this wave's accumulated slice, format a human-readable line,
-// and stream it to the trace file via gpu_fwrite (the fopen/fwrite hostcall path).
-// Inserted at kernel EXIT, so each wave emits exactly one grouped line; the mailbox
-// ticket lock serializes waves, so lines don't interleave. wid is the wave's logical
-// flattened id, computed from the forwarded implicit ABI args (blockIdx/blockDim/
-// threadIdx). Non-leaf (calls gpu_fwrite, has a local buffer) — inserted-call ABI.
+// PER-WAVE FLUSH: read this wave's persistent state (handle/hits/lanes stashed by pw_open),
+// format a human-readable line into the `line` buffer, and stream it to the trace file via
+// gpu_fwrite. Inserted at kernel EXIT, so each wave emits exactly one grouped line; the
+// mailbox ticket lock serializes waves, so lines don't interleave. Non-leaf (calls
+// gpu_fwrite) — inserted-call ABI.
 extern "C" __device__ __noinline__ __attribute__((used))
-void pw_flush(void* slice) {
+void pw_flush(void* handle_, void* hits_, void* lanes_, void* line_) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
     if (pos != 0) return;                             // one lane per wave writes the line
-    char* b = (char*)slice;
-    long long h  = *(volatile long long*)(b + 0);     // this wave's file handle (from pw_open)
-    int hits     = *(volatile int*)(b + 8);
-    int lanes    = *(volatile int*)(b + 12);          // read stats BEFORE reformatting
+    long long h  = *(volatile long long*)handle_;     // this wave's file handle (from pw_open)
+    int hits     = *(volatile int*)hits_;
+    int lanes    = *(volatile int*)lanes_;            // read stats BEFORE reformatting
     unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    // Format into the (global) slice text area; gpu_fwrite reads its data via flat
-    // loads, so it must be global, not a private/stack buffer.
-    int i = 16;
-    i = put_str(b, i, "wave ");    i = put_uint(b, i, wid);
-    i = put_str(b, i, ": hits=");  i = put_uint(b, i, (unsigned)hits);
-    i = put_str(b, i, " lanes=");  i = put_uint(b, i, (unsigned)lanes);
-    b[i++] = '\n';
-    gpu_fwrite(h, b + 16, i - 16);                    // -> this wave's own file
+    char* t = (char*)line_;                           // output-line staging buffer
+    int i = 0;
+    i = put_str(t, i, "wave ");    i = put_uint(t, i, wid);
+    i = put_str(t, i, ": hits=");  i = put_uint(t, i, (unsigned)hits);
+    i = put_str(t, i, " lanes=");  i = put_uint(t, i, (unsigned)lanes);
+    t[i++] = '\n';
+    gpu_fwrite(h, t, i);                              // -> this wave's own file
 }
 
 // ---- COMPOSABLE model: per-wave variable HOLDS a call's return value ----------
@@ -168,37 +173,38 @@ void bb_inc(void* base, int bbid) {
 // bbcount_<wid>.txt via the fopen/fwrite hostcalls. Slice-arg counterpart of the retired
 // global-base bb_flush — the mutator passes the SAME pw.address() it passed to bb_inc.
 extern "C" __device__ __noinline__ __attribute__((used))
-void bb_flush_pw(void* base, int nbb) {
+// LAYOUT-AGNOSTIC: the mutator hands three DISTINCT per-wave variables — the counts array
+// bb_inc wrote, a filename staging buffer, and a report-text staging buffer — so the probe
+// does NO offset arithmetic and makes no assumptions about how they're packed. (The
+// filename/report buffers must be in the host-readable per-wave arena: gpu_fwrite is
+// pass-by-address, so the host reads `report` straight from that device VA.)
+void bb_flush_pw(void* counts_, void* fname_, void* report_, int nbb) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
-    unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
-    if (pos != 0) return;
+    if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
     unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    char* b = (char*)base;
-    volatile unsigned* counts = (volatile unsigned*)b; // counts[0..nbb) at slice+0 (matches bb_inc)
-    // COMPACT layout: counts end (8-aligned), then a 64B filename, then the report text.
-    // The mutator sizes the per-wave arena to exactly this (nbb-derived), so no fixed slot.
-    unsigned C = (((unsigned)(nbb > 0 ? nbb : 0) * 4u) + 7u) & ~7u;
-    char* nm = b + C;                                  // filename [C, C+64)
-    char* t  = b + C + 64u;                            // report text (flat-loadable global)
+    volatile unsigned* counts = (volatile unsigned*)counts_;   // written by bb_inc / bb_inc_one
+    char* nm = (char*)fname_;                                  // filename staging buffer
+    char* t  = (char*)report_;                                 // report-text staging buffer
     int fi = 0;
     fi = put_str(nm, fi, "bbcount_"); fi = put_uint(nm, fi, wid); fi = put_str(nm, fi, ".txt"); nm[fi] = '\0';
     long long h = gpu_fopen(nm, "w");
-    int i = 0;                                         // one line per block: "bb <k>: <count>\n"
+    int i = 0;                                                 // one line per block: "bb <k>: <count>\n"
     for (int k = 0; k < nbb; k++) {
         i = put_str(t, i, "bb ");  i = put_uint(t, i, (unsigned)k);
         i = put_str(t, i, ": ");   i = put_uint(t, i, counts[k]);
         t[i++] = '\n';
     }
-    gpu_fwrite(h, t, i);                               // -> bbcount_<wid>.txt
+    gpu_fwrite(h, t, i);                                       // -> bbcount_<wid>.txt
 }
 
 // ---- REAL-FWRITE eval: pass-by-address vs by-value egress ----------------------
-// Both take THIS wave's slice (a PerWaveBuf pointer; host-readable when the launcher's
-// per-wave buffer is fine-grained/managed), open real_/bv_<wid>.txt, format an nbytes
-// record into the slice, and stream it out. real_write uses gpu_real_fwrite (host reads
-// the record by address — no 512B cap, one atomic host fwrite); bv_write uses gpu_fwrite
-// (by-value copy into the ring — capped at 512B). Used to compare correctness + cost.
+// Both take TWO distinct per-wave variables the mutator declares — a filename staging
+// buffer and the nbytes record buffer (both host-readable when the per-wave buffer is
+// fine-grained/managed) — so the probe does no offset math. They open real_/bv_<wid>.txt,
+// format the record, and stream it out. real_write uses gpu_fwrite pass-by-address (host
+// reads the record by address — no 512B cap, one atomic host fwrite); bv_write uses
+// gpu_fwrite_256 (by-value copy into the ring — capped at 512B). Compare correctness + cost.
 static __device__ int pwr_fill(char* rec, unsigned wid, int nbytes) {
     int n = 0; n = put_str(rec, n, "wave "); n = put_uint(rec, n, wid); n = put_str(rec, n, ": ");
     for (; n < nbytes - 1; n++) rec[n] = (char)('A' + (n % 26));
@@ -206,27 +212,27 @@ static __device__ int pwr_fill(char* rec, unsigned wid, int nbytes) {
     return n;
 }
 extern "C" __device__ __noinline__ __attribute__((used))
-void real_write(void* slice, int nbytes) {
+void real_write(void* fname_, void* record_, int nbytes) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
     unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    char* b = (char*)slice;
-    int i = 0; i = put_str(b, i, "real_"); i = put_uint(b, i, wid); i = put_str(b, i, ".txt"); b[i] = '\0';
-    long long h = gpu_fopen(b, "w");
-    char* rec = b + 128;
+    char* nm = (char*)fname_;                               // filename staging buffer
+    char* rec = (char*)record_;                             // record staging buffer
+    int i = 0; i = put_str(nm, i, "real_"); i = put_uint(nm, i, wid); i = put_str(nm, i, ".txt"); nm[i] = '\0';
+    long long h = gpu_fopen(nm, "w");
     gpu_fwrite(h, rec, pwr_fill(rec, wid, nbytes));        // host reads `rec` by address (default)
 }
 extern "C" __device__ __noinline__ __attribute__((used))
-void bv_write(void* slice, int nbytes) {
+void bv_write(void* fname_, void* record_, int nbytes) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
     unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
-    char* b = (char*)slice;
-    int i = 0; i = put_str(b, i, "bv_"); i = put_uint(b, i, wid); i = put_str(b, i, ".txt"); b[i] = '\0';
-    long long h = gpu_fopen(b, "w");
-    char* rec = b + 128;
+    char* nm = (char*)fname_;                               // filename staging buffer
+    char* rec = (char*)record_;                             // record staging buffer
+    int i = 0; i = put_str(nm, i, "bv_"); i = put_uint(nm, i, wid); i = put_str(nm, i, ".txt"); nm[i] = '\0';
+    long long h = gpu_fopen(nm, "w");
     gpu_fwrite_256(h, rec, pwr_fill(rec, wid, nbytes));    // by-value copy into the ring (≤512)
 }
 
