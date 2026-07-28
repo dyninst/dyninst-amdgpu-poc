@@ -14,7 +14,19 @@ RUNTIME_LIB="$ROOT/runtime/device/hostcall_lib.aliased.elf"   # hc_* runtime
 USER_LIB="$ROOT/instrumentation/user_lib/combined.aliased.elf" # user probes + runtime
 MUTATORS="$ROOT/instrumentation/mutators/build"                # built mutator binaries
 PRELOAD="$ROOT/runtime/host/preload.so"
+AUDIT="$ROOT/runtime/host/audit.so"
 LAUNCHER="$ROOT/runtime/host/launcher"
+
+# Injector selection for the experiments: HC_INJECTOR=preload (default) uses LD_PRELOAD;
+# HC_INJECTOR=audit uses the rtld-audit build (LD_AUDIT). hc_inject echoes the matching
+# env assignment so an experiment's run line is injector-agnostic:
+#     env $(hc_inject) ROCR_VISIBLE_DEVICES=1 "$EXE"
+hc_inject() {
+  case "${HC_INJECTOR:-preload}" in
+    audit) echo "LD_AUDIT=$AUDIT" ;;
+    *)     echo "LD_PRELOAD=$PRELOAD" ;;
+  esac
+}
 TOOLS="$ROOT/tools"
 MUTATEES="$ROOT/mutatees/vectoradd"
 KERNEL_DEFAULT='_Z9vectoraddPfPKfS1_i'

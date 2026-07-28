@@ -41,12 +41,12 @@ printf '' > /tmp/empty.host
 "$BUNDLER" --type=o --targets=host-x86_64-unknown-linux-gnu-,$TARGET \
   --input=/tmp/empty.host --input="$EXE.inst.synced.co" --output="$EXE.bundle" 2>/dev/null
 
-echo ">> [5] run under preload (host reads STRIDE from the co symbol; no PW_STRIDE env)"
-RUN="$ROOT/experiments/runs/bb_count"; rm -rf "$RUN"; mkdir -p "$RUN"; cd "$RUN"
-PW_NARGS=3 \
+echo ">> [5] run under ${HC_INJECTOR:-preload} (host reads STRIDE from the co symbol; no PW_STRIDE env)"
+RUN="$ROOT/experiments/runs/bb_count.${HC_INJECTOR:-preload}"; rm -rf "$RUN"; mkdir -p "$RUN"; cd "$RUN"
+env PW_NARGS=3 \
   HOSTCALL_ORIG_CO="$EXE.co" HOSTCALL_INST_CO="$EXE.inst.synced.co" \
   HOSTCALL_LIB="$USER_LIB" HOSTCALL_BUNDLE="$EXE.bundle" \
-  ROCR_VISIBLE_DEVICES=1 LD_PRELOAD="$PRELOAD" "$EXE" > run.log 2>&1 || true
+  ROCR_VISIBLE_DEVICES=1 $(hc_inject) "$EXE" > run.log 2>&1 || true
 grep -iE 'PASSED|FAILED|serviced|froze|fault|illegal|STRIDE' run.log || true
 
 echo "== per-wave basic-block execution counts =="
