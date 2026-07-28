@@ -6,7 +6,7 @@ CXXFLAGS  = -O2 -g -std=c++17 -I$(ROCM)/include
 LDFLAGS   = -L$(ROCM)/lib -lhsa-runtime64 -lpthread
 HOOKS     = hostcall_hooks.h hostcall_service.h co_stride.h ../hostcalls.h
 
-all: preload.so audit.so launcher
+all: preload.so audit.so launcher launcher_nd
 
 preload.so: preload.cpp hostcall_service.cpp $(HOOKS)
 	$(CXX) -shared -fPIC $(CXXFLAGS) preload.cpp hostcall_service.cpp -o $@ $(LDFLAGS) -ldl
@@ -20,5 +20,9 @@ audit.so: audit.cpp hostcall_service.cpp $(HOOKS)
 launcher: launcher.cpp hostcall_service.cpp hostcall_service.h ../hostcalls.h
 	$(CXX) $(CXXFLAGS) launcher.cpp hostcall_service.cpp -o $@ $(LDFLAGS) -lamdhip64
 
+# N-D (2D/3D) launcher for debugging the per-wave wid; raw HSA, no HIP dependency.
+launcher_nd: launcher_nd.cpp hostcall_service.cpp hostcall_service.h ../hostcalls.h co_stride.h
+	$(CXX) $(CXXFLAGS) launcher_nd.cpp hostcall_service.cpp -o $@ $(LDFLAGS)
+
 clean:
-	rm -f preload.so audit.so launcher
+	rm -f preload.so audit.so launcher launcher_nd

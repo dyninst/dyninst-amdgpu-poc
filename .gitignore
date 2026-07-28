@@ -14,6 +14,8 @@
 # host binaries
 runtime/host/preload.so
 runtime/host/launcher
+runtime/host/audit.so
+runtime/host/launcher_nd
 # mutator + example cmake build trees
 instrumentation/mutators/build/
 # top-level build tree: dyninst cmake build + install prefix (DYNINST_PREFIX default)
@@ -26,6 +28,8 @@ mutatees/vectoradd/twokernels
 mutatees/vectoradd/twoco
 mutatees/vectoradd/bbdemo
 mutatees/vectoradd/bbmw
+mutatees/vectoradd/vectoradd2d
+mutatees/vectoradd/vectoradd3d
 # experiment run outputs (traces, wave files, manifests)
 experiments/runs/
 # python / misc

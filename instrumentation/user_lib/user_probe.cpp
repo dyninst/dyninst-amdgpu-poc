@@ -68,6 +68,23 @@ static __device__ int put_uint(char* b, int i, unsigned v) {
     return i;
 }
 
+// GLOBAL WAVEFRONT ID — the flattened, hardware-consistent wave index in [0, nwaves).
+// It MUST match (a) the emitter's per-wave slice-base computation (emit-amdgpu.C entry
+// prologue) and (b) the host's sizing nwaves = numBlocks * ceil(blockDim/64), or two
+// waves would map to the same slice. General for 1D/2D/3D launches: a lower-rank launch
+// collapses automatically — the emitter forwards blockIdx.{y,z}=0 for dimensions the
+// kernel doesn't use, and the COV5 implicit args report blockDim.{y,z}=gridDim.{y,z}=1 —
+// so this reduces to the 1D id with no per-kernel specialization needed on the device.
+// (The DETECTION that "picks the implementation" lives in the emitter, which can only
+// read blockIdx.y/z when the kernel descriptor enables those workgroup-id SGPRs.)
+static __device__ unsigned global_wavefront_id() {
+    unsigned bdx = blockDim.x, bdy = blockDim.y, bdz = blockDim.z;
+    unsigned wpb = (bdx * bdy * bdz + 63u) / 64u;                          // waves per block
+    unsigned blk = (blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+    unsigned lin = (threadIdx.z * bdy + threadIdx.y) * bdx + threadIdx.x;  // local linear tid
+    return blk * wpb + lin / 64u;
+}
+
 // PER-WAVE OPEN / FLUSH: the mutator declares NAMED per-wave variables and hands each
 // probe exactly the ones it needs — no ad-hoc byte layout the probe has to sub-divide.
 // Three of them are genuine PERSISTENT per-wave state carried from the ENTRY probe to the
@@ -86,7 +103,7 @@ void pw_open(void* handle_, void* hits_, void* lanes_, void* name_) {
     unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     unsigned pos = __builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo);
     if (pos != 0) return;
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    unsigned wid = global_wavefront_id();
     char* nm = (char*)name_;                           // filename staging buffer
     int i = 0;
     i = put_str(nm, i, "wave_"); i = put_uint(nm, i, wid); i = put_str(nm, i, ".txt");
@@ -111,7 +128,7 @@ void pw_flush(void* handle_, void* hits_, void* lanes_, void* line_) {
     long long h  = *(volatile long long*)handle_;     // this wave's file handle (from pw_open)
     int hits     = *(volatile int*)hits_;
     int lanes    = *(volatile int*)lanes_;            // read stats BEFORE reformatting
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    unsigned wid = global_wavefront_id();
     char* t = (char*)line_;                           // output-line staging buffer
     int i = 0;
     i = put_str(t, i, "wave ");    i = put_uint(t, i, wid);
@@ -182,7 +199,7 @@ void bb_flush_pw(void* counts_, void* fname_, void* report_, int nbb) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo  = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    unsigned wid = global_wavefront_id();
     volatile unsigned* counts = (volatile unsigned*)counts_;   // written by bb_inc / bb_inc_one
     char* nm = (char*)fname_;                                  // filename staging buffer
     char* t  = (char*)report_;                                 // report-text staging buffer
@@ -216,7 +233,7 @@ void real_write(void* fname_, void* record_, int nbytes) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    unsigned wid = global_wavefront_id();
     char* nm = (char*)fname_;                               // filename staging buffer
     char* rec = (char*)record_;                             // record staging buffer
     int i = 0; i = put_str(nm, i, "real_"); i = put_uint(nm, i, wid); i = put_str(nm, i, ".txt"); nm[i] = '\0';
@@ -228,7 +245,7 @@ void bv_write(void* fname_, void* record_, int nbytes) {
     unsigned long long ex = __builtin_amdgcn_read_exec();
     unsigned lo = __builtin_amdgcn_mbcnt_lo((unsigned)ex, 0u);
     if (__builtin_amdgcn_mbcnt_hi((unsigned)(ex >> 32), lo) != 0) return;   // one lane/wave
-    unsigned wid = (blockIdx.x * blockDim.x + threadIdx.x) / 64u;
+    unsigned wid = global_wavefront_id();
     char* nm = (char*)fname_;                               // filename staging buffer
     char* rec = (char*)record_;                             // record staging buffer
     int i = 0; i = put_str(nm, i, "bv_"); i = put_uint(nm, i, wid); i = put_str(nm, i, ".txt"); nm[i] = '\0';
