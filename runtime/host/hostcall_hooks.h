@@ -154,12 +154,6 @@ static hsa_status_t find_cpu(hsa_agent_t a, void* d) {
     if (t == HSA_DEVICE_TYPE_CPU) { auto* s=(AgentSearch*)d; s->agent=a; s->found=true; return HSA_STATUS_INFO_BREAK; }
     return HSA_STATUS_SUCCESS;
 }
-static hsa_status_t find_gpu(hsa_agent_t a, void* d) {
-    BIND(hsa_agent_get_info);
-    hsa_device_type_t t; real_hsa_agent_get_info(a, HSA_AGENT_INFO_DEVICE, &t);
-    if (t == HSA_DEVICE_TYPE_GPU) { auto* s=(AgentSearch*)d; s->agent=a; s->found=true; return HSA_STATUS_INFO_BREAK; }
-    return HSA_STATUS_SUCCESS;
-}
 struct PoolSearch { hsa_amd_memory_pool_t pool; bool found; };
 static hsa_status_t find_fine_grained(hsa_amd_memory_pool_t pool, void* d) {
     BIND(hsa_amd_memory_pool_get_info);
@@ -299,7 +293,6 @@ static hsa_status_t hook_freeze(hsa_executable_t exe, const char* options) {
 // ------------------------------------------------------------------ launch hook
 namespace { struct pw_dim3 { uint32_t x, y, z; }; }   // dim3 ABI: {uint32 x,y,z}
 extern "C" int hipMallocManaged(void** ptr, size_t size, unsigned int flags);
-extern "C" int hipMalloc(void** ptr, size_t size);
 extern "C" int hipLaunchKernel(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
                                void** args, size_t sharedMemBytes, void* stream);
 
@@ -338,7 +331,7 @@ static int pw_nargs() {
 // launch, from the actual wave count (nwaves * STRIDE). The append index (the kernel's
 // ORIGINAL explicit-arg count) comes from pw_nargs() — read from the co, not an env var —
 // which also gates: -1 (not a per-wave-buffer instrumentation) leaves the launch untouched.
-// PW_ALLOC picks the memory type (managed default).
+// The buffer is host-coherent managed memory.
 static int hook_launch(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
                        void** args, size_t sharedMemBytes, void* stream) {
     BIND(hipLaunchKernel);
@@ -347,27 +340,14 @@ static int hook_launch(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
         uint64_t wpb    = ((uint64_t)dimBlocks.x * dimBlocks.y * dimBlocks.z + 63) / 64;  // waves/block
         uint64_t nwaves = (uint64_t)numBlocks.x * numBlocks.y * numBlocks.z * wpb;
         size_t   sz     = (size_t)nwaves * pw_stride();
-        const char* alloc = getenv("PW_ALLOC"); if (!alloc) alloc = "managed";
-        int rc = 0;
-        if (!strcmp(alloc, "device")) {
-            BIND(hipMalloc);
-            rc = real_hipMalloc(&g_arg_buf, sz);                            // coarse-grained device
-        } else if (!strcmp(alloc, "fg")) {                                 // HSA fine-grained
-            BIND(hsa_iterate_agents); BIND(hsa_amd_agent_iterate_memory_pools);
-            BIND(hsa_amd_memory_pool_allocate); BIND(hsa_amd_agents_allow_access);
-            static hsa_amd_memory_pool_t s_fg{}; static hsa_agent_t s_gpu{}; static bool s_ok=false;
-            if (!s_ok) { AgentSearch cpu{}, gpu{}; real_hsa_iterate_agents(find_cpu,&cpu); real_hsa_iterate_agents(find_gpu,&gpu);
-                PoolSearch fg{}; if (cpu.found) real_hsa_amd_agent_iterate_memory_pools(cpu.agent, find_fine_grained, &fg);
-                s_fg=fg.pool; s_gpu=gpu.agent; s_ok=cpu.found&&gpu.found&&fg.found; }
-            rc = (s_ok && real_hsa_amd_memory_pool_allocate(s_fg, sz, 0, &g_arg_buf)==HSA_STATUS_SUCCESS) ? 0 : 1;
-            if (!rc) real_hsa_amd_agents_allow_access(1, &s_gpu, nullptr, g_arg_buf);
-        } else {
-            BIND(hipMallocManaged);
-            rc = real_hipMallocManaged(&g_arg_buf, sz, 1u);                 // managed (default)
-        }
-        fprintf(stderr, HLOG_PREFIX "PW_ALLOC=%s\n", alloc);
+        // Host-coherent managed memory: host-readable so pass-by-address gpu_fwrite works,
+        // and the natural fit under HIP. (Was a PW_ALLOC A/B knob over device / HSA
+        // fine-grained during the memory-type fault investigation; managed is the validated
+        // choice, so the knob is dropped.)
+        BIND(hipMallocManaged);
+        int rc = real_hipMallocManaged(&g_arg_buf, sz, 1u);
         if (rc != 0 || !g_arg_buf) {
-            fprintf(stderr, HLOG_PREFIX "per-wave alloc(%s,%zu) failed; launching unmodified\n", alloc, sz);
+            fprintf(stderr, HLOG_PREFIX "per-wave managed alloc(%zu) failed; launching unmodified\n", sz);
             return real_hipLaunchKernel(func, numBlocks, dimBlocks, args, sharedMemBytes, stream);
         }
         std::vector<void*> na(args, args + n);

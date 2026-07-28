@@ -86,9 +86,6 @@ static std::atomic<bool> g_run{true};
 // The CPU-side ring service loop lives in hostcall_service.cpp (shared with preload.cpp).
 
 #include <chrono>
-// HIP managed-memory alloc (linked via -lamdhip64), used when PW_MANAGED is set to compare
-// managed vs fine-grained for the host-read per-wave buffer. hipError_t==int; flag 1=Global.
-extern "C" int hipMallocManaged(void** ptr, size_t size, unsigned int flags);
 
 int main(int argc, char** argv) {
     const char* mutatee = (argc > 1) ? argv[1] : "vectoradd.inst.co";
@@ -176,20 +173,15 @@ int main(int argc, char** argv) {
     uint32_t n_waves = (uint32_t)((N + 63) / 64);          // wave64
     size_t   instbuf_sz = INST_HEADER + (size_t)n_waves * INST_SLOT_SIZE;
     void*    instbuf = nullptr;
-    bool     managed = getenv("PW_MANAGED") != nullptr;    // evaluate managed vs fine-grained
-    if (managed) {
-        if (hipMallocManaged(&instbuf, instbuf_sz, 1u) != 0 || !instbuf) {
-            fprintf(stderr, "[host] hipMallocManaged(%zu) failed\n", instbuf_sz); return 1; }
-        memset(instbuf, 0, instbuf_sz);
-        printf("[host] per-wave buffer: hipMallocManaged @ %p  (%u waves x %u = %zu bytes)\n",
-               instbuf, n_waves, INST_SLOT_SIZE, instbuf_sz);
-    } else {
-        HSA_CHECK(hsa_amd_memory_pool_allocate(fg.pool, instbuf_sz, 0, &instbuf));
-        HSA_CHECK(hsa_amd_agents_allow_access(1, agents, nullptr, instbuf));
-        memset(instbuf, 0, instbuf_sz);                    // fine-grained: CPU-zeroable
-        printf("[host] per-wave buffer: fine-grained @ %p  (%u waves x %u = %zu bytes)\n",
-               instbuf, n_waves, INST_SLOT_SIZE, instbuf_sz);
-    }
+    // Host-coherent fine-grained memory: host-readable so the CPU can zero it and read back
+    // what the probes wrote. (Was a PW_MANAGED A/B knob over HIP managed memory during the
+    // memory-type fault investigation; fine-grained is the validated choice for this raw-HSA
+    // launcher, so the knob — and the -lamdhip64 dependency it needed — is dropped.)
+    HSA_CHECK(hsa_amd_memory_pool_allocate(fg.pool, instbuf_sz, 0, &instbuf));
+    HSA_CHECK(hsa_amd_agents_allow_access(1, agents, nullptr, instbuf));
+    memset(instbuf, 0, instbuf_sz);
+    printf("[host] per-wave buffer: fine-grained @ %p  (%u waves x %u = %zu bytes)\n",
+           instbuf, n_waves, INST_SLOT_SIZE, instbuf_sz);
 
     // Workgroup size: default = min(N, 1024). A single workgroup for N<=1024 (historical
     // behavior), but capped at the gfx908 hardware max of 1024 work-items — beyond that the

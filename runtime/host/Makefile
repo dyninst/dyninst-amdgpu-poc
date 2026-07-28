@@ -17,8 +17,8 @@ preload.so: preload.cpp hostcall_service.cpp $(HOOKS)
 audit.so: audit.cpp hostcall_service.cpp $(HOOKS)
 	$(CXX) -shared -fPIC $(CXXFLAGS) audit.cpp hostcall_service.cpp -o $@ -lpthread -ldl
 
-launcher: launcher.cpp hostcall_service.cpp hostcall_service.h ../hostcalls.h
-	$(CXX) $(CXXFLAGS) launcher.cpp hostcall_service.cpp -o $@ $(LDFLAGS) -lamdhip64
+launcher: launcher.cpp hostcall_service.cpp hostcall_service.h ../hostcalls.h co_stride.h
+	$(CXX) $(CXXFLAGS) launcher.cpp hostcall_service.cpp -o $@ $(LDFLAGS)
 
 # N-D (2D/3D) launcher for debugging the per-wave wid; raw HSA, no HIP dependency.
 launcher_nd: launcher_nd.cpp hostcall_service.cpp hostcall_service.h ../hostcalls.h co_stride.h

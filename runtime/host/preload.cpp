@@ -17,7 +17,7 @@
 //     this .so is preloaded; each just forwards to the matching hook body.
 //
 // Config (env): HOSTCALL_ORIG_CO / HOSTCALL_INST_CO / HOSTCALL_BUNDLE (or HOSTCALL_MANIFEST),
-// HOSTCALL_LIB, PW_ALLOC, HOSTCALL_VERBOSE. See experiments/*.sh.  (The per-wave STRIDE, the
+// HOSTCALL_LIB, HOSTCALL_VERBOSE. See experiments/*.sh.  (The per-wave STRIDE, the
 // explicit-arg count, and the COV5 hidden-arg offsets are all read from the co itself —
 // self-describing, no env: __dyninst_pw_stride symbol + the metadata .note.)
 
