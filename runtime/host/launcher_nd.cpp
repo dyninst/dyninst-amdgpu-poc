@@ -8,8 +8,8 @@
 // Config (env):
 //   BX,BY,BZ   workgroup (block) dims        (default 8,8,4)
 //   GX,GY,GZ   grid dims IN BLOCKS           (default 2,2,2)
-//   OFF_BC     byte offset of hidden_block_count_x in the kernarg segment (u32 x3)
-//   OFF_GS     byte offset of hidden_group_size_x  in the kernarg segment (u16 x3)
+//   (The COV5 hidden-arg offsets block_count_x / group_size_x are read from the co's OWN
+//    .note metadata — self-describing, like __dyninst_pw_stride — not from any env var.)
 //   NDIM       dispatch dimensionality 2 or 3 (default 3)
 // Args: <mutatee.inst.co> <lib.aliased.elf> <kd_name>
 //   e.g. launcher_nd vectoradd3d.inst.synced.co combined.aliased.elf _Z11vectoradd3dPfPKfS1_iii.kd
@@ -77,7 +77,15 @@ int main(int argc, char** argv) {
     const uint32_t BX=envu("BX",8), BY=envu("BY",8), BZ=envu("BZ",4);      // block dims
     const uint32_t GX=envu("GX",2), GY=envu("GY",2), GZ=envu("GZ",2);      // grid dims (blocks)
     const uint32_t NDIM=envu("NDIM",3);
-    const uint32_t OFF_BC=envu("OFF_BC",40), OFF_GS=envu("OFF_GS",52);
+    // Self-describing: read the COV5 hidden-arg offsets from the instrumented co's OWN
+    // metadata note (like __dyninst_pw_stride below), not a hardcoded per-kernel constant.
+    const uint32_t OFF_BC = co_read_kernarg_offset(mutatee, "hidden_block_count_x", 0xffffffffu);
+    const uint32_t OFF_GS = co_read_kernarg_offset(mutatee, "hidden_group_size_x",  0xffffffffu);
+    if (OFF_BC==0xffffffffu || OFF_GS==0xffffffffu) {
+        fprintf(stderr, "[host] could not read hidden-arg offsets from %s's .note\n", mutatee);
+        return 1;
+    }
+    printf("[host] hidden-arg offsets from co: block_count@%u group_size@%u\n", OFF_BC, OFF_GS);
     const uint32_t WX=BX*GX, WY=BY*GY, WZ=BZ*GZ;                            // grid sizes (threads)
     const uint32_t N = WX*WY*WZ;
     const uint32_t threadsPerBlk = BX*BY*BZ;

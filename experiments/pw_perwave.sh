@@ -46,9 +46,8 @@ printf '' > /tmp/empty.host
 "$BUNDLER" --type=o --targets=host-x86_64-unknown-linux-gnu-,$TARGET \
   --input=/tmp/empty.host --input="$EXE.pw.co" --output="$EXE.pw.bundle" 2>/dev/null
 
-echo ">> [5] run under preload (MANAGED g_arg_buf, PW_NARGS=3 explicit args)"
+echo ">> [5] run under preload (MANAGED g_arg_buf)"
 RUN="$ROOT/experiments/runs/pw_perwave"; rm -rf "$RUN"; mkdir -p "$RUN"; cd "$RUN"
-PW_NARGS=3 \
   HOSTCALL_ORIG_CO="$EXE.co" HOSTCALL_INST_CO="$EXE.pw.co" \
   HOSTCALL_LIB="$USER_LIB" HOSTCALL_BUNDLE="$EXE.pw.bundle" \
   ROCR_VISIBLE_DEVICES=1 LD_PRELOAD="$PRELOAD" "$EXE" > run.log 2>&1 || true

@@ -303,11 +303,10 @@ extern "C" int hipMalloc(void** ptr, size_t size);
 extern "C" int hipLaunchKernel(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
                                void** args, size_t sharedMemBytes, void* stream);
 
-// Per-wave STRIDE (bytes/wave). Self-describing: read from __dyninst_pw_stride in the
-// instrumented co (HOSTCALL_INST_CO). PW_STRIDE env overrides; 4096 fallback.
+// Per-wave STRIDE (bytes/wave). Self-describing: read from the __dyninst_pw_stride symbol
+// baked into the instrumented co (HOSTCALL_INST_CO); 4096 fallback if absent.
 static uint32_t pw_stride() {
     static uint32_t s = [] {
-        if (const char* e = getenv("PW_STRIDE")) return (uint32_t)strtoul(e, nullptr, 0);
         uint32_t v = co_read_symbol_u32(getenv("HOSTCALL_INST_CO"), "__dyninst_pw_stride", 4096);
         fprintf(stderr, HLOG_PREFIX "per-wave STRIDE = %u B (from __dyninst_pw_stride)\n", v);
         return v;
@@ -316,16 +315,35 @@ static uint32_t pw_stride() {
 }
 static void* g_arg_buf = nullptr;   // this launch's per-wave arg buffer (device)
 
+// Index at which the preload appends the per-wave buffer as an extra explicit kernarg —
+// self-describing, derived from the instrumented co (no PW_NARGS env). GATE: the co is a
+// per-wave-buffer instrumentation iff it carries the __dyninst_pw_stride marker symbol (else
+// return -1 → leave the launch untouched, e.g. multikernel/multi_co). INDEX: the app passes
+// the kernel's ORIGINAL explicit args, so the append index is the explicit-arg count read
+// from the co (expand_args appends the buffer AFTER the hidden-arg block, so the count of
+// explicit args before the first hidden_* arg is exactly the original count). Cached.
+static int pw_nargs() {
+    static int n = [] {
+        const char* inst = getenv("HOSTCALL_INST_CO");
+        if (co_read_symbol_u32(inst, "__dyninst_pw_stride", 0u) == 0u) return -1;  // no per-wave buffer
+        int cnt = co_read_explicit_arg_count(inst, -1);
+        if (cnt >= 0)
+            fprintf(stderr, HLOG_PREFIX "per-wave buffer -> arg[%d] (explicit-arg count read from co)\n", cnt);
+        return cnt;
+    }();
+    return n;
+}
+
 // Append a per-wave buffer pointer as an extra EXPLICIT kernel argument. Sized HERE, at
-// launch, from the actual wave count (nwaves * STRIDE). PW_NARGS = the kernel's ORIGINAL
-// explicit-arg count (hipLaunchKernel's args[] has no length). PW_ALLOC picks the memory
-// type (managed default). Reaches the kernarg only when the co carries the extra descriptor.
+// launch, from the actual wave count (nwaves * STRIDE). The append index (the kernel's
+// ORIGINAL explicit-arg count) comes from pw_nargs() — read from the co, not an env var —
+// which also gates: -1 (not a per-wave-buffer instrumentation) leaves the launch untouched.
+// PW_ALLOC picks the memory type (managed default).
 static int hook_launch(const void* func, pw_dim3 numBlocks, pw_dim3 dimBlocks,
                        void** args, size_t sharedMemBytes, void* stream) {
     BIND(hipLaunchKernel);
-    const char* ne = getenv("PW_NARGS");
-    if (ne && args) {
-        int n = atoi(ne);
+    const int n = pw_nargs();
+    if (n >= 0 && args) {
         uint64_t wpb    = ((uint64_t)dimBlocks.x * dimBlocks.y * dimBlocks.z + 63) / 64;  // waves/block
         uint64_t nwaves = (uint64_t)numBlocks.x * numBlocks.y * numBlocks.z * wpb;
         size_t   sz     = (size_t)nwaves * pw_stride();

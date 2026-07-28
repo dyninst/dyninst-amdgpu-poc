@@ -36,9 +36,8 @@ printf '' > /tmp/empty.host
 "$BUNDLER" --type=o --targets=host-x86_64-unknown-linux-gnu-,$TARGET \
   --input=/tmp/empty.host --input="$EXE.cap.co" --output="$EXE.cap.bundle" 2>/dev/null
 
-echo ">> [5] run under preload (PW_NARGS=4 explicit args)"
+echo ">> [5] run under preload"
 RUN="$ROOT/experiments/runs/capture_return"; rm -rf "$RUN"; mkdir -p "$RUN"; cd "$RUN"
-PW_NARGS=4 \
   HOSTCALL_ORIG_CO="$EXE.co" HOSTCALL_INST_CO="$EXE.cap.co" \
   HOSTCALL_LIB="$USER_LIB" HOSTCALL_BUNDLE="$EXE.cap.bundle" \
   ROCR_VISIBLE_DEVICES=1 LD_PRELOAD="$PRELOAD" "$EXE" > run.log 2>&1 || true

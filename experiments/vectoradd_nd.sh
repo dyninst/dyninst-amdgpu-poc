@@ -14,9 +14,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../scripts/env.sh"
 make -C "$MUTATEES" vectoradd2d vectoradd3d >/dev/null
 make -C "$ROOT/instrumentation/user_lib" >/dev/null           # pw_open/pw_flush + gpu_fopen
 
-# run_case <exe> <kernel> <nargs> <nwaves>
+# run_case <exe> <kernel> <nwaves>   (explicit-arg count is read from the co by the preload)
 run_case() {
-  local exe="$1" kernel="$2" nargs="$3" nwaves="$4"
+  local exe="$1" kernel="$2" nwaves="$3"
   local EXE="$MUTATEES/$exe"
   echo "########## $exe  (kernel $kernel, $nwaves waves) ##########"
 
@@ -40,7 +40,7 @@ run_case() {
     --input=/tmp/empty.host --input="$EXE.inst.synced.co" --output="$EXE.bundle" 2>/dev/null
 
   local RUN="$ROOT/experiments/runs/vectoradd_nd.$exe"; rm -rf "$RUN"; mkdir -p "$RUN"; cd "$RUN"
-  env PW_NARGS="$nargs" \
+  env \
     HOSTCALL_ORIG_CO="$EXE.co" HOSTCALL_INST_CO="$EXE.inst.synced.co" \
     HOSTCALL_LIB="$USER_LIB" HOSTCALL_BUNDLE="$EXE.bundle" \
     ROCR_VISIBLE_DEVICES=1 LD_PRELOAD="$PRELOAD" "$EXE" > run.log 2>&1 || true
@@ -59,8 +59,8 @@ run_case() {
 }
 
 rc=0
-run_case vectoradd2d _Z11vectoradd2dPfPKfS1_ii  5 64 || rc=1
+run_case vectoradd2d _Z11vectoradd2dPfPKfS1_ii 64 || rc=1
 echo
-run_case vectoradd3d _Z11vectoradd3dPfPKfS1_iii 6 32 || rc=1
+run_case vectoradd3d _Z11vectoradd3dPfPKfS1_iii 32 || rc=1
 echo
 [ "$rc" = 0 ] && echo "ALL PASS: 2D + 3D per-wave wid validated" || { echo "SOME FAILED"; exit 1; }

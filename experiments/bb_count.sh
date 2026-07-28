@@ -43,7 +43,7 @@ printf '' > /tmp/empty.host
 
 echo ">> [5] run under ${HC_INJECTOR:-preload} (host reads STRIDE from the co symbol; no PW_STRIDE env)"
 RUN="$ROOT/experiments/runs/bb_count.${HC_INJECTOR:-preload}"; rm -rf "$RUN"; mkdir -p "$RUN"; cd "$RUN"
-env PW_NARGS=3 \
+env \
   HOSTCALL_ORIG_CO="$EXE.co" HOSTCALL_INST_CO="$EXE.inst.synced.co" \
   HOSTCALL_LIB="$USER_LIB" HOSTCALL_BUNDLE="$EXE.bundle" \
   ROCR_VISIBLE_DEVICES=1 $(hc_inject) "$EXE" > run.log 2>&1 || true

@@ -40,7 +40,6 @@ printf '' > /tmp/empty.host
 
 echo ">> [5] run under preload (N=512 => 8 waves; bbmw has 3 explicit args)"
 RUN="$ROOT/experiments/runs/bb_count_multivar"; rm -rf "$RUN"; mkdir -p "$RUN"; cd "$RUN"
-PW_NARGS=3 \
   HOSTCALL_ORIG_CO="$EXE.co" HOSTCALL_INST_CO="$EXE.inst.synced.co" \
   HOSTCALL_LIB="$USER_LIB" HOSTCALL_BUNDLE="$EXE.bundle" \
   ROCR_VISIBLE_DEVICES=1 LD_PRELOAD="$PRELOAD" "$EXE" > run.log 2>&1 || true
