@@ -22,6 +22,7 @@ set(MUTATORS
   bb_count_multivar_instrument # same counter, one per-wave var PER block (multi-var style)
   real_write_instrument       # pass-by-address vs by-value fwrite egress eval
   multivar_instrument         # multiple per-wave variables at distinct arena offsets
+  getpc_reloc_instrument      # validate getpc-call relocation (getpc-idiom kernel)
 )
 foreach(m ${MUTATORS})
   add_executable(${m} ${m}.C)
