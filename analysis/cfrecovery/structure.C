@@ -919,14 +919,21 @@ class StructureAnalysis {
       if(!src.empty()) state[dst] = "firstlane(" + val(src[0].key) + ")"; else state.erase(dst);
       return;
     }
-    // Packed u16 lane extract from a known packed dword (e.g. group_size_x|group_size_y):
-    //   low half  = `s_and sX, sY, 0xffff`  → same offset
-    //   high half = `s_lshr sX, sY, 16`     → offset + 2  (this is how blockDim.y is read)
-    if(opc.rfind("S_AND", 0) == 0 && !writesExec(in) && src.size() == 1 && !imm.empty()){
-      auto ps = packed_.find(src[0].key); PackedSrc keep = ps != packed_.end() ? ps->second : PackedSrc{};
-      bool carry = ps != packed_.end();
-      if(state.count(src[0].key)){ state[dst] = state[src[0].key]; } else state.erase(dst);
-      packed_.erase(dst); if(carry) packed_[dst] = keep;                   // low half keeps the same offset
+    // AND with an immediate, two cases distinguished by whether the source is a tracked PACKED field:
+    //   packed u16 extract (`s_and sX,sY,0xffff` of a packed dword) → preserve the field label (low half
+    //     keeps the same offset; the matching high half is the s_lshr…16 below)
+    //   bit-mask / test     (`v_and v6,1,v0` = i%2, or any `x & k`)   → build `(x & imm)` so it roots
+    if((opc.rfind("S_AND_B32", 0) == 0 || opc.rfind("V_AND_B32", 0) == 0) && src.size() == 1 && !imm.empty()){
+      auto ps = packed_.find(src[0].key);
+      const bool packed = ps != packed_.end();
+      const PackedSrc keep = packed ? ps->second : PackedSrc{};            // copy out before erase (dst may == src)
+      packed_.erase(dst);
+      if(packed){                                                          // packed field: preserve label + offset
+        if(state.count(src[0].key)) state[dst] = state[src[0].key]; else state.erase(dst);
+        packed_[dst] = keep;
+      } else if(state.count(src[0].key)){                                  // bit-mask / test: root the value
+        state[dst] = "(" + val(src[0].key) + " & " + imm + ")";
+      } else state.erase(dst);
       return;
     }
     if(opc.rfind("S_LSHR", 0) == 0 && src.size() == 1 && imm == "16"){
