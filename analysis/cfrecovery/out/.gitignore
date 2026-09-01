@@ -1,0 +1,5 @@
+# Regenerable artifacts from make-contact-sheet.sh — rebuild with:
+#   ./make-contact-sheet.sh   (from analysis/cfrecovery/)
+# The generator script is the source of truth; these are derived and can be large/binary.
+*.dot
+*.png
