@@ -1,0 +1,4 @@
+# CMake build tree + tooling logs + editor swap files (all regenerable)
+build/
+*.log
+*.swp
