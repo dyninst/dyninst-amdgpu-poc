@@ -41,3 +41,10 @@ __pycache__/
 # internal design docs — LOCAL ONLY, kept out of the public github repo.
 # (README.md at repo root stays public; everything under docs/ is private.)
 /docs/
+
+# stray mutator build logs + compiled mutatee binaries (build products)
+instrumentation/mutators/*.log
+mutatees/vectoradd/vaddcall
+mutatees/vectoradd/vaddcall2d
+mutatees/vectoradd/vaddcall3d
+mutatees/vectoradd/spillcall

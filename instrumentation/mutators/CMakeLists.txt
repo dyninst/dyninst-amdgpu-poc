@@ -28,3 +28,9 @@ foreach(m ${MUTATORS})
   add_executable(${m} ${m}.C)
   target_link_libraries(${m} PRIVATE Dyninst::dyninstAPI)
 endforeach()
+
+# SIMT-IF condition counter: a plain BPatch mutator. The EXEC split is done at PARSE time now
+# (IA_amdgpu::isModifyExecMask + Parser.C), so a SIMT-condition is just a block whose head is a
+# saveexec — instrumented via findEntryPoint like any block. No ParseAPI/CFGModifier needed.
+add_executable(simt_if_instrument simt_if_instrument.C)   # seen[k]++ at each SIMT-IF condition block
+target_link_libraries(simt_if_instrument PRIVATE Dyninst::dyninstAPI)
