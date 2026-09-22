@@ -7,7 +7,7 @@ __global__ void kA(float* C, const float* A, const float* B, int N){
 extern "C" void run_kB(float*, const float*, const float*, int);
 int main(){
   int n=0; CK(hipGetDeviceCount(&n)); int dev=0;
-  for(int i=0;i<n;i++){hipDeviceProp_t p;CK(hipGetDeviceProperties(&p,i));if(!strncmp(p.gcnArchName,"gfx908",6)){dev=i;break;}}
+  for(int i=0;i<n;i++){hipDeviceProp_t p;CK(hipGetDeviceProperties(&p,i));if(!strncmp(p.gcnArchName,"gfx9", 4)){dev=i;break;}}
   CK(hipSetDevice(dev));
   const int N=64; size_t b=N*sizeof(float);
   float*A,*B,*C; CK(hipMalloc(&A,b));CK(hipMalloc(&B,b));CK(hipMalloc(&C,b));

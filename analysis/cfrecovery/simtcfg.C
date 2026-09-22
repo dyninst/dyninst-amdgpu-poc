@@ -51,7 +51,7 @@ static Role blockRole(Block *b){
 static bool endsInExecz(Block *b){
   Block::Insns insns; b->getInsns(insns);
   if(insns.empty()) return false;
-  return insns.rbegin()->second.getOperation().getID() == amdgpu_gfx908_op_S_CBRANCH_EXECZ;
+  return CFR_IS(insns.rbegin()->second.getOperation().getID(), S_CBRANCH_EXECZ);
 }
 
 // ---- edge typing ---------------------------------------------------------------------------------

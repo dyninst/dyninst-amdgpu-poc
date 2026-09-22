@@ -16,6 +16,7 @@
 #include "dyn_regs.h"
 #include "entryIDs.h"
 #include "registers/AMDGPU/amdgpu_gfx908_regs.h"
+#include "registers/AMDGPU/amdgpu_gfx940_regs.h"
 #include "Symtab.h"
 #include "Symbol.h"
 #include "Region.h"
@@ -24,7 +25,12 @@
 #include <cstdlib>
 #include <cctype>
 using namespace Dyninst; using namespace Dyninst::ParseAPI; using namespace Dyninst::InstructionAPI;
-namespace R = Dyninst::amdgpu_gfx908;   // gfx908-only for now; arch-generic is an integration-time item
+namespace R908 = Dyninst::amdgpu_gfx908;
+namespace R940 = Dyninst::amdgpu_gfx940;   // gfx940/gfx942 (CDNA3); gfx942 binaries decode via gfx940
+// Arch-neutral entryID matching (gfx908 + gfx940 share the GFX9 mnemonic, distinct enum id). One
+// binary is one arch, so listing both enumerators as case labels / OR-terms never collides.
+#define CFR_OP(name)      case amdgpu_gfx908_op_##name: case amdgpu_gfx940_op_##name
+#define CFR_IS(id, name)  ((id) == amdgpu_gfx908_op_##name || (id) == amdgpu_gfx940_op_##name)
 
 // ---------- minimal MessagePack reader (for the AMDGPU metadata note, mechanism B) --------------
 // The kernel metadata note (NT_AMDGPU_METADATA) is msgpack-encoded; we decode just enough to read
@@ -102,12 +108,16 @@ static std::string prettyHidden(const std::string& vk){
 // Canonical key for one register = its uppercased name — matches Operand::format() (s4→"S4", v0→"V0"),
 // so it stays consistent with the ABI seeds without any string parsing.
 static std::string regKey(MachRegister r){ std::string n = r.name(); for(char &c : n) c = std::toupper((unsigned char)c); return n; }
-static bool isScalarReg(MachRegister r){ return r.regClass() == amdgpu_gfx908::s0.regClass(); }
+static bool isScalarReg(MachRegister r){
+  return r.regClass() == amdgpu_gfx908::s0.regClass() || r.regClass() == amdgpu_gfx940::s0.regClass();
+}
 // A "data" register we track: SGPR/VGPR only, excluding the mask/special regs (exec/vcc/scc/m0/waitcnt).
 static bool isDataReg(MachRegister r){
   const auto sc = amdgpu_gfx908::s0.regClass(), vc = amdgpu_gfx908::v0.regClass();
-  if(r.regClass() != sc && r.regClass() != vc) return false;
-  if(r == R::exec_lo || r == R::exec_hi || r == R::vcc_lo || r == R::vcc_hi) return false;
+  const auto sc9 = amdgpu_gfx940::s0.regClass(), vc9 = amdgpu_gfx940::v0.regClass();
+  if(r.regClass() != sc && r.regClass() != vc && r.regClass() != sc9 && r.regClass() != vc9) return false;
+  if(r == R908::exec_lo  || r == R908::exec_hi  || r == R908::vcc_lo  || r == R908::vcc_hi)  return false;
+  if(r == R940::exec_lo || r == R940::exec_hi || r == R940::vcc_lo || r == R940::vcc_hi) return false;
   return r.name() != "scc";
 }
 // The data registers an operand touches, sorted by number — front() is the low 32-bit half of a pair.
@@ -140,7 +150,8 @@ static bool writesReg(const Instruction &in, MachRegister r){
 
 // True if the instruction writes EXEC (either half of the 64-bit mask).
 static bool writesExec(const Instruction &in){
-  return writesReg(in, R::exec_lo) || writesReg(in, R::exec_hi);
+  return writesReg(in, R908::exec_lo)  || writesReg(in, R908::exec_hi)
+      || writesReg(in, R940::exec_lo) || writesReg(in, R940::exec_hi);
 }
 
 // True if a saveexec's dest (SDST) and source (SSRC0) are the same register — a clean complement
@@ -153,29 +164,29 @@ static bool isSelfFlip(const Instruction &in){
 // Uniform (scalar) conditional branch on SCC — the idiom for uniform loops/ifs. entryID (small set).
 static bool isSccBranch(const Instruction &in){
   const entryID id = in.getOperation().getID();
-  return id == amdgpu_gfx908_op_S_CBRANCH_SCC0 || id == amdgpu_gfx908_op_S_CBRANCH_SCC1;
+  return CFR_IS(id, S_CBRANCH_SCC0) || CFR_IS(id, S_CBRANCH_SCC1);
 }
 static bool sccBranchTakenWhenTrue(const Instruction &in){   // SCC1 branches when the condition holds
-  return in.getOperation().getID() == amdgpu_gfx908_op_S_CBRANCH_SCC1;
+  return CFR_IS(in.getOperation().getID(), S_CBRANCH_SCC1);
 }
 
 // Divergent (EXEC-mask) conditional branch — the backedge of an EXEC loop / waterfall. entryID.
 static bool isExecBranch(const Instruction &in){
   const entryID id = in.getOperation().getID();
-  return id == amdgpu_gfx908_op_S_CBRANCH_EXECNZ || id == amdgpu_gfx908_op_S_CBRANCH_EXECZ;
+  return CFR_IS(id, S_CBRANCH_EXECNZ) || CFR_IS(id, S_CBRANCH_EXECZ);
 }
 static bool execBranchTakenWhenLanesRemain(const Instruction &in){   // EXECNZ branches while any lane is active
-  return in.getOperation().getID() == amdgpu_gfx908_op_S_CBRANCH_EXECNZ;
+  return CFR_IS(in.getOperation().getID(), S_CBRANCH_EXECNZ);
 }
 // Cross-lane broadcast (v_readfirstlane/v_readlane) — uniformizes a divergent value. entryID.
 static bool isReadfirstlane(const Instruction &in){
   const entryID id = in.getOperation().getID();
-  return id == amdgpu_gfx908_op_V_READFIRSTLANE_B32 || id == amdgpu_gfx908_op_V_READLANE_B32;
+  return CFR_IS(id, V_READFIRSTLANE_B32) || CFR_IS(id, V_READLANE_B32);
 }
 // Indirect call / jump-through-register (the target is a register operand). entryID.
 static bool isCallInsn(const Instruction &in){
   const entryID id = in.getOperation().getID();
-  return id == amdgpu_gfx908_op_S_SWAPPC_B64 || id == amdgpu_gfx908_op_S_SETPC_B64;
+  return CFR_IS(id, S_SWAPPC_B64) || CFR_IS(id, S_SETPC_B64);
 }
 
 // SKETCH (Dyninst has NO induction-variable analysis — getLoopIterators() is a warning stub — so
@@ -208,41 +219,41 @@ static bool isBasicInductionUpdate(const Instruction &in, std::string &reg, std:
 static MaskOp classify(const Instruction &in){
   switch(in.getOperation().getID()){
     // OPEN: narrows EXEC by a fresh condition (s_and_saveexec) — a divergent `if`.
-    case amdgpu_gfx908_op_S_AND_SAVEEXEC_B64:
+    CFR_OP(S_AND_SAVEEXEC_B64):
       return MaskOp::Open;
 
     // ELSE: any saveexec that isn't the plain AND-narrow is a same-region transition — else-entry
     // widen (s_or_saveexec), flip (s_xor_saveexec), or the rarer boolean-combine forms the exec-mask
     // fuser (SIOptimizeExecMasking::getSaveExecOp) can emit for nand/nor/orn2/xnor conditions.
-    case amdgpu_gfx908_op_S_OR_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_XOR_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_ORN2_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_NAND_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_NOR_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_XNOR_SAVEEXEC_B64:
+    CFR_OP(S_OR_SAVEEXEC_B64):
+    CFR_OP(S_XOR_SAVEEXEC_B64):
+    CFR_OP(S_ORN2_SAVEEXEC_B64):
+    CFR_OP(S_NAND_SAVEEXEC_B64):
+    CFR_OP(S_NOR_SAVEEXEC_B64):
+    CFR_OP(S_XNOR_SAVEEXEC_B64):
       return MaskOp::Else;
     // s_andn2_saveexec: same-reg (s[X],s[X]) is a clean else flip; different regs (s[X],s[Y])
     // route the REMAINING lanes to the next case — an elseif-chain step via a precomputed mask,
     // which does NOT map onto a plain else (forcing it produced double-negated garbage).
-    case amdgpu_gfx908_op_S_ANDN2_SAVEEXEC_B64:
+    CFR_OP(S_ANDN2_SAVEEXEC_B64):
       return isSelfFlip(in) ? MaskOp::Else : MaskOp::Reroute;
 
     // Context-dependent: a CLOSE/ELSE only when it actually writes EXEC (restore / flip);
     // otherwise it is ordinary scalar arithmetic on SGPRs.
-    case amdgpu_gfx908_op_S_OR_B64:
-    case amdgpu_gfx908_op_S_MOV_B64:
+    CFR_OP(S_OR_B64):
+    CFR_OP(S_MOV_B64):
       return writesExec(in) ? MaskOp::Close : MaskOp::None;
-    case amdgpu_gfx908_op_S_XOR_B64:
-    case amdgpu_gfx908_op_S_ANDN2_B64:
+    CFR_OP(S_XOR_B64):
+    CFR_OP(S_ANDN2_B64):
       return writesExec(in) ? MaskOp::Else : MaskOp::None;
 
     // NARROW: `exec &= cond` inside a region — the short-circuit `&&` refinement
     // (`if (A && B)` lowers to saveexec(A) then s_and_b64 exec,exec,B).
-    case amdgpu_gfx908_op_S_AND_B64:
+    CFR_OP(S_AND_B64):
       return writesExec(in) ? MaskOp::Narrow : MaskOp::None;
 
-    case amdgpu_gfx908_op_V_CNDMASK_B32: return MaskOp::Select;   // predicated value-select
-    case amdgpu_gfx908_op_S_SWAPPC_B64:  return MaskOp::Call;     // indirect call (region body)
+    CFR_OP(V_CNDMASK_B32): return MaskOp::Select;   // predicated value-select
+    CFR_OP(S_SWAPPC_B64):  return MaskOp::Call;     // indirect call (region body)
 
     default: {
       // Compares are the deliberate exception to the entryID rule: ~200 variants (V_CMP/S_CMP/
@@ -283,7 +294,7 @@ static std::set<MachRegister> maskReads(const Instruction &in){
   std::set<MachRegister> out;
   for(const auto &r : reads){
     MachRegister id = r->getID();
-    if(id == R::exec_lo || id == R::exec_hi) continue;
+    if(id == R908::exec_lo || id == R908::exec_hi || id == R940::exec_lo || id == R940::exec_hi) continue;
     out.insert(id);
   }
   return out;
@@ -468,7 +479,7 @@ class StructureAnalysis {
         const Instruction term     = insns.rbegin()->second;
         if(!isSccBranch(term)) continue;
 
-        std::set<MachRegister> scc{ R::src_scc };
+        std::set<MachRegister> scc{ R908::src_scc };
         std::set<Block*> vis; Instruction cmp; Address cmpAddr = 0;
         const bool haveCmp = reachingDefInsn(scc, b, termAddr, vis, cmp, cmpAddr);
         std::string cond;

@@ -45,7 +45,7 @@ static hsa_status_t find_gpu(hsa_agent_t a, void* d) {
     hsa_device_type_t t; hsa_agent_get_info(a, HSA_AGENT_INFO_DEVICE, &t);
     if (t != HSA_DEVICE_TYPE_GPU) return HSA_STATUS_SUCCESS;
     char n[64] = {}; hsa_agent_get_info(a, HSA_AGENT_INFO_NAME, n);
-    if (strstr(n, "gfx908")) { auto* s=(AgentSearch*)d; s->agent=a; s->found=true; return HSA_STATUS_INFO_BREAK; }
+    if (strstr(n, "gfx9")) { auto* s=(AgentSearch*)d; s->agent=a; s->found=true; return HSA_STATUS_INFO_BREAK; }
     return HSA_STATUS_SUCCESS;
 }
 static hsa_status_t find_cpu(hsa_agent_t a, void* d) {

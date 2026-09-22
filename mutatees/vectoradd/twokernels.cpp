@@ -9,7 +9,7 @@
 
 static int pick_gfx908(){ int n=0; CK(hipGetDeviceCount(&n));
   for(int i=0;i<n;i++){ hipDeviceProp_t p; CK(hipGetDeviceProperties(&p,i));
-    if(!strncmp(p.gcnArchName,"gfx908",6)){ printf("device %d: %s\n",i,p.gcnArchName); return i; } }
+    if(!strncmp(p.gcnArchName,"gfx9", 4)){ printf("device %d: %s\n",i,p.gcnArchName); return i; } }
   fprintf(stderr,"no gfx908\n"); std::abort(); }
 
 __global__ void kadd(float* C, const float* A, const float* B, int N){
