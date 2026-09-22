@@ -1,7 +1,14 @@
 // classify.h — semantic classification of AMDGPU EXEC-mask / predication ops, keyed on entryID +
 // register identity (no format-string parsing). This is the shared foundation of the CF-recovery
 // analysis; structure.C and classify.C currently carry their own in-file copies — consolidate them
-// onto this header when convenient. gfx908-only for now (arch dispatch is an integration-time item).
+// onto this header when convenient.
+//
+// ARCH DISPATCH (gfx908 + gfx940/gfx942): the EXEC/predication ISA (SAVEEXEC family, s_cbranch_
+// execz/nz, v_cndmask, ...) is identical across GFX9, but the decoder emits DISTINCT per-arch
+// entryID enumerators and per-arch MachRegisters. gfx942 binaries decode through the gfx940 backend.
+// So every opcode/register test below matches BOTH arches: CFR_OP() lists the gfx908 and gfx940
+// enumerator as parallel case labels; CFR_IS() ORs them; the exec/vcc/regClass tests check both
+// register namespaces. One binary is one arch, so the extra labels never collide.
 #ifndef CFR_CLASSIFY_H
 #define CFR_CLASSIFY_H
 
@@ -13,11 +20,17 @@
 #include "Register.h"
 #include "entryIDs.h"
 #include "registers/AMDGPU/amdgpu_gfx908_regs.h"
+#include "registers/AMDGPU/amdgpu_gfx940_regs.h"
 
 namespace cfr {
 using namespace Dyninst;
 using namespace Dyninst::InstructionAPI;
 namespace R = Dyninst::amdgpu_gfx908;
+namespace R9 = Dyninst::amdgpu_gfx940;   // gfx940/gfx942 (CDNA3) register namespace
+
+// Arch-neutral entryID matching helpers (gfx908 + gfx940 share the GFX9 mnemonic, distinct enum id).
+#define CFR_OP(name)      case amdgpu_gfx908_op_##name: case amdgpu_gfx940_op_##name
+#define CFR_IS(id, name)  ((id) == amdgpu_gfx908_op_##name || (id) == amdgpu_gfx940_op_##name)
 
 enum class MaskOp { None, Open, Close, Else, Reroute, Narrow, Select, Call, Compare };
 
@@ -29,17 +42,21 @@ inline bool writesReg(const Instruction &in, MachRegister r){
 }
 // True if the instruction writes EXEC (either half of the 64-bit mask). This is the general
 // "changes the active-lane set" test — includes saveexec, or/xor/and exec, mov exec, etc.
-inline bool isGeneralWriteExec(const Instruction &in){ return writesReg(in, R::exec_lo) || writesReg(in, R::exec_hi); }
+// Checks both arch namespaces (a gfx942 binary decodes exec as amdgpu_gfx940::exec_*).
+inline bool isGeneralWriteExec(const Instruction &in){
+  return writesReg(in, R::exec_lo)  || writesReg(in, R::exec_hi)
+      || writesReg(in, R9::exec_lo) || writesReg(in, R9::exec_hi);
+}
 inline bool writesExec(const Instruction &in){ return isGeneralWriteExec(in); }   // legacy name
 
 // The saveexec family — the atomic mask-narrow/flip ops, recognizable by entryID ALONE (no operand
 // inspection needed, unlike isGeneralWriteExec). A subset of isGeneralWriteExec.
 inline bool isModifyExecMask(const Instruction &in){
   switch(in.getOperation().getID()){
-    case amdgpu_gfx908_op_S_AND_SAVEEXEC_B64:  case amdgpu_gfx908_op_S_OR_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_XOR_SAVEEXEC_B64:  case amdgpu_gfx908_op_S_ANDN2_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_ORN2_SAVEEXEC_B64: case amdgpu_gfx908_op_S_NAND_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_NOR_SAVEEXEC_B64:  case amdgpu_gfx908_op_S_XNOR_SAVEEXEC_B64:
+    CFR_OP(S_AND_SAVEEXEC_B64):  CFR_OP(S_OR_SAVEEXEC_B64):
+    CFR_OP(S_XOR_SAVEEXEC_B64):  CFR_OP(S_ANDN2_SAVEEXEC_B64):
+    CFR_OP(S_ORN2_SAVEEXEC_B64): CFR_OP(S_NAND_SAVEEXEC_B64):
+    CFR_OP(S_NOR_SAVEEXEC_B64):  CFR_OP(S_XNOR_SAVEEXEC_B64):
       return true;
     default: return false;
   }
@@ -54,7 +71,7 @@ inline bool isModifyExecMask(const Instruction &in){
 // fallthrough predecessor; not applicable on gfx908.)
 inline bool isExecSplitPoint(const Instruction &in){
   const entryID id = in.getOperation().getID();
-  if(id == amdgpu_gfx908_op_S_MOV_B64 && isGeneralWriteExec(in)) return false;   // except mov→exec
+  if(CFR_IS(id, S_MOV_B64) && isGeneralWriteExec(in)) return false;   // except mov→exec
   return isModifyExecMask(in) || isGeneralWriteExec(in);
 }
 
@@ -68,28 +85,28 @@ inline bool isSelfFlip(const Instruction &in){
 // Classify one instruction's role in the EXEC-mask / predication algebra.
 inline MaskOp classify(const Instruction &in){
   switch(in.getOperation().getID()){
-    case amdgpu_gfx908_op_S_AND_SAVEEXEC_B64:                       // narrows EXEC, saves old — opens an `if`
+    CFR_OP(S_AND_SAVEEXEC_B64):                                    // narrows EXEC, saves old — opens an `if`
       return MaskOp::Open;
-    case amdgpu_gfx908_op_S_OR_SAVEEXEC_B64:                        // SI_ELSE entry + the boolean-combine
-    case amdgpu_gfx908_op_S_XOR_SAVEEXEC_B64:                       // saveexec fuser forms
-    case amdgpu_gfx908_op_S_ORN2_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_NAND_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_NOR_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_XNOR_SAVEEXEC_B64:
+    CFR_OP(S_OR_SAVEEXEC_B64):                                     // SI_ELSE entry + the boolean-combine
+    CFR_OP(S_XOR_SAVEEXEC_B64):                                    // saveexec fuser forms
+    CFR_OP(S_ORN2_SAVEEXEC_B64):
+    CFR_OP(S_NAND_SAVEEXEC_B64):
+    CFR_OP(S_NOR_SAVEEXEC_B64):
+    CFR_OP(S_XNOR_SAVEEXEC_B64):
       return MaskOp::Else;
-    case amdgpu_gfx908_op_S_ANDN2_SAVEEXEC_B64:                     // same-reg → else; diff-reg → reroute
+    CFR_OP(S_ANDN2_SAVEEXEC_B64):                                  // same-reg → else; diff-reg → reroute
       return isSelfFlip(in) ? MaskOp::Else : MaskOp::Reroute;
-    case amdgpu_gfx908_op_S_OR_B64:                                 // context-dependent: CLOSE only if it
-    case amdgpu_gfx908_op_S_MOV_B64:                                // actually writes EXEC (else plain SGPR alu)
+    CFR_OP(S_OR_B64):                                              // context-dependent: CLOSE only if it
+    CFR_OP(S_MOV_B64):                                             // actually writes EXEC (else plain SGPR alu)
       return writesExec(in) ? MaskOp::Close : MaskOp::None;
-    case amdgpu_gfx908_op_S_XOR_B64:
-    case amdgpu_gfx908_op_S_ANDN2_B64:
+    CFR_OP(S_XOR_B64):
+    CFR_OP(S_ANDN2_B64):
       return writesExec(in) ? MaskOp::Else : MaskOp::None;
-    case amdgpu_gfx908_op_S_AND_B64:                                // `&&` short-circuit narrowing of EXEC
+    CFR_OP(S_AND_B64):                                             // `&&` short-circuit narrowing of EXEC
       return writesExec(in) ? MaskOp::Narrow : MaskOp::None;
-    case amdgpu_gfx908_op_V_CNDMASK_B32:                            // per-lane data select (if-conversion)
+    CFR_OP(V_CNDMASK_B32):                                         // per-lane data select (if-conversion)
       return MaskOp::Select;
-    case amdgpu_gfx908_op_S_SWAPPC_B64:                             // indirect call
+    CFR_OP(S_SWAPPC_B64):                                          // indirect call
       return MaskOp::Call;
     default: {
       const std::string op = in.getOperation().format();           // ~200 compare variants: mnemonic prefix

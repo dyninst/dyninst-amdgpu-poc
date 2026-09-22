@@ -37,12 +37,16 @@ static BPatch bpatch;
 
 // SIMT-CONDITION head: the saveexec family, by entryID (no string parsing) — the isModifyExecMask
 // primitive inlined here so the mutator is self-contained.
+// Arch dispatch (gfx908 + gfx940/gfx942): the SAVEEXEC family is identical GFX9 ISA, but the decoder
+// emits DISTINCT per-arch entryID enumerators (gfx942 decodes via the gfx940 backend). Match both —
+// one binary is one arch, so the extra labels never collide.
+#define SIMT_OP(name) case amdgpu_gfx908_op_##name: case amdgpu_gfx940_op_##name
 static bool isSaveExec(const InstructionAPI::Instruction &in) {
   switch (in.getOperation().getID()) {
-    case amdgpu_gfx908_op_S_AND_SAVEEXEC_B64:  case amdgpu_gfx908_op_S_OR_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_XOR_SAVEEXEC_B64:  case amdgpu_gfx908_op_S_ANDN2_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_ORN2_SAVEEXEC_B64: case amdgpu_gfx908_op_S_NAND_SAVEEXEC_B64:
-    case amdgpu_gfx908_op_S_NOR_SAVEEXEC_B64:  case amdgpu_gfx908_op_S_XNOR_SAVEEXEC_B64:
+    SIMT_OP(S_AND_SAVEEXEC_B64):  SIMT_OP(S_OR_SAVEEXEC_B64):
+    SIMT_OP(S_XOR_SAVEEXEC_B64):  SIMT_OP(S_ANDN2_SAVEEXEC_B64):
+    SIMT_OP(S_ORN2_SAVEEXEC_B64): SIMT_OP(S_NAND_SAVEEXEC_B64):
+    SIMT_OP(S_NOR_SAVEEXEC_B64):  SIMT_OP(S_XNOR_SAVEEXEC_B64):
       return true;
     default: return false;
   }
