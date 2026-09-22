@@ -18,7 +18,7 @@
 using namespace Dyninst;
 using namespace Dyninst::ParseAPI;
 using namespace Dyninst::InstructionAPI;
-namespace R = Dyninst::amdgpu_gfx908;
+namespace R908 = Dyninst::amdgpu_gfx908;
 
 enum class MaskOp { None, Open, Close, Else, Select, Call, Compare };
 static const char *name(MaskOp m){
@@ -32,7 +32,7 @@ static bool writesReg(const Instruction &in, MachRegister r){
   for (auto &x : w) if (x->getID() == r) return true;
   return false;
 }
-static bool writesExec(const Instruction &in){ return writesReg(in,R::exec_lo) || writesReg(in,R::exec_hi); }
+static bool writesExec(const Instruction &in){ return writesReg(in,R908::exec_lo) || writesReg(in,R908::exec_hi); }
 
 // --- classify() --------------------------------------------------------------------
 static MaskOp classify(const Instruction &in){

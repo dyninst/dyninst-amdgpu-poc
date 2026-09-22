@@ -25,8 +25,8 @@
 #include <cstdlib>
 #include <cctype>
 using namespace Dyninst; using namespace Dyninst::ParseAPI; using namespace Dyninst::InstructionAPI;
-namespace R  = Dyninst::amdgpu_gfx908;
-namespace R9 = Dyninst::amdgpu_gfx940;   // gfx940/gfx942 (CDNA3); gfx942 binaries decode via gfx940
+namespace R908 = Dyninst::amdgpu_gfx908;
+namespace R940 = Dyninst::amdgpu_gfx940;   // gfx940/gfx942 (CDNA3); gfx942 binaries decode via gfx940
 // Arch-neutral entryID matching (gfx908 + gfx940 share the GFX9 mnemonic, distinct enum id). One
 // binary is one arch, so listing both enumerators as case labels / OR-terms never collides.
 #define CFR_OP(name)      case amdgpu_gfx908_op_##name: case amdgpu_gfx940_op_##name
@@ -116,8 +116,8 @@ static bool isDataReg(MachRegister r){
   const auto sc = amdgpu_gfx908::s0.regClass(), vc = amdgpu_gfx908::v0.regClass();
   const auto sc9 = amdgpu_gfx940::s0.regClass(), vc9 = amdgpu_gfx940::v0.regClass();
   if(r.regClass() != sc && r.regClass() != vc && r.regClass() != sc9 && r.regClass() != vc9) return false;
-  if(r == R::exec_lo  || r == R::exec_hi  || r == R::vcc_lo  || r == R::vcc_hi)  return false;
-  if(r == R9::exec_lo || r == R9::exec_hi || r == R9::vcc_lo || r == R9::vcc_hi) return false;
+  if(r == R908::exec_lo  || r == R908::exec_hi  || r == R908::vcc_lo  || r == R908::vcc_hi)  return false;
+  if(r == R940::exec_lo || r == R940::exec_hi || r == R940::vcc_lo || r == R940::vcc_hi) return false;
   return r.name() != "scc";
 }
 // The data registers an operand touches, sorted by number — front() is the low 32-bit half of a pair.
@@ -150,8 +150,8 @@ static bool writesReg(const Instruction &in, MachRegister r){
 
 // True if the instruction writes EXEC (either half of the 64-bit mask).
 static bool writesExec(const Instruction &in){
-  return writesReg(in, R::exec_lo)  || writesReg(in, R::exec_hi)
-      || writesReg(in, R9::exec_lo) || writesReg(in, R9::exec_hi);
+  return writesReg(in, R908::exec_lo)  || writesReg(in, R908::exec_hi)
+      || writesReg(in, R940::exec_lo) || writesReg(in, R940::exec_hi);
 }
 
 // True if a saveexec's dest (SDST) and source (SSRC0) are the same register — a clean complement
@@ -294,7 +294,7 @@ static std::set<MachRegister> maskReads(const Instruction &in){
   std::set<MachRegister> out;
   for(const auto &r : reads){
     MachRegister id = r->getID();
-    if(id == R::exec_lo || id == R::exec_hi || id == R9::exec_lo || id == R9::exec_hi) continue;
+    if(id == R908::exec_lo || id == R908::exec_hi || id == R940::exec_lo || id == R940::exec_hi) continue;
     out.insert(id);
   }
   return out;
@@ -479,7 +479,7 @@ class StructureAnalysis {
         const Instruction term     = insns.rbegin()->second;
         if(!isSccBranch(term)) continue;
 
-        std::set<MachRegister> scc{ R::src_scc };
+        std::set<MachRegister> scc{ R908::src_scc };
         std::set<Block*> vis; Instruction cmp; Address cmpAddr = 0;
         const bool haveCmp = reachingDefInsn(scc, b, termAddr, vis, cmp, cmpAddr);
         std::string cond;

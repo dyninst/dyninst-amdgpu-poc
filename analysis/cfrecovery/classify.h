@@ -25,8 +25,8 @@
 namespace cfr {
 using namespace Dyninst;
 using namespace Dyninst::InstructionAPI;
-namespace R = Dyninst::amdgpu_gfx908;
-namespace R9 = Dyninst::amdgpu_gfx940;   // gfx940/gfx942 (CDNA3) register namespace
+namespace R908 = Dyninst::amdgpu_gfx908;
+namespace R940 = Dyninst::amdgpu_gfx940;   // gfx940/gfx942 (CDNA3) register namespace
 
 // Arch-neutral entryID matching helpers (gfx908 + gfx940 share the GFX9 mnemonic, distinct enum id).
 #define CFR_OP(name)      case amdgpu_gfx908_op_##name: case amdgpu_gfx940_op_##name
@@ -44,8 +44,8 @@ inline bool writesReg(const Instruction &in, MachRegister r){
 // "changes the active-lane set" test — includes saveexec, or/xor/and exec, mov exec, etc.
 // Checks both arch namespaces (a gfx942 binary decodes exec as amdgpu_gfx940::exec_*).
 inline bool isGeneralWriteExec(const Instruction &in){
-  return writesReg(in, R::exec_lo)  || writesReg(in, R::exec_hi)
-      || writesReg(in, R9::exec_lo) || writesReg(in, R9::exec_hi);
+  return writesReg(in, R908::exec_lo)  || writesReg(in, R908::exec_hi)
+      || writesReg(in, R940::exec_lo) || writesReg(in, R940::exec_hi);
 }
 inline bool writesExec(const Instruction &in){ return isGeneralWriteExec(in); }   // legacy name
 
