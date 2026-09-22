@@ -18,7 +18,7 @@ KERNEL="${4:-$KERNEL_DEFAULT}"
 
 echo ">> [1] extract app co from $(basename "$EXE")"
 "$OBJDUMP" --offloading "$EXE" >/dev/null 2>&1
-APP="$(ls -t "$EXE".0.hipv4*gfx908* 2>/dev/null | head -1)"
+APP="$(ls -t "$EXE".0.*amdgcn* 2>/dev/null | head -1)"   # device offload bundle, any gfx9 arch (host is *host-x86_64*)
 [ -n "$APP" ] || { echo "extract failed (no offload bundle in $EXE)"; exit 1; }
 cp -f "$APP" "$EXE.co"
 
