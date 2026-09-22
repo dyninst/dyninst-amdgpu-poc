@@ -29,7 +29,7 @@ static int select_gfx908_device() {
     int n = 0; HIP_CHECK(hipGetDeviceCount(&n));
     for (int i = 0; i < n; i++) {
         hipDeviceProp_t p; HIP_CHECK(hipGetDeviceProperties(&p, i));
-        if (strncmp(p.gcnArchName, "gfx908", 6) == 0) {
+        if (strncmp(p.gcnArchName, "gfx9", 4) == 0) {
             printf("Selecting device %d: %s (%s)\n", i, p.name, p.gcnArchName);
             return i;
         }
